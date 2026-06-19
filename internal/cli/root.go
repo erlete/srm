@@ -44,7 +44,7 @@ func Execute(version string) error {
 	root.PersistentFlags().StringVar(&flagOrg, "org", "", "operate on a single org (default: all configured orgs where applicable)")
 	root.PersistentFlags().BoolVar(&flagDryRun, "dry-run", false, "preview mutations without calling GitHub")
 
-	root.AddCommand(newInitCmd(), newRunnersCmd(), newGroupsCmd(), newProvisionCmd(), newDoctorCmd(), newCacheCmd(), newReconcileCmd(), newRunnerCycleCmd(), newVersionCmd(version))
+	root.AddCommand(newInitCmd(), newRunnersCmd(), newGroupsCmd(), newProvisionCmd(), newDoctorCmd(), newCacheCmd(), newReconcileCmd(), newRunnerCycleCmd(), newBackupCmd(), newRestoreCmd(), newVersionCmd(version))
 	return root.Execute()
 }
 
