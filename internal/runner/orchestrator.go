@@ -83,6 +83,11 @@ type Orchestrator interface {
 	EnsureBase(ctx context.Context) error
 	CreateRunner(ctx context.Context, spec RunnerSpec, dl Download, regToken string) error
 	RemoveRunner(ctx context.Context, name, org, removeToken string) error
+	// AgentID reads the GitHub runner id the agent recorded locally in its .runner
+	// file at registration. This host-local, host-bound id is how a runner must be
+	// deregistered — never a name lookup across the org, which can resolve to
+	// another host's same-named runner. Returns an error if the file is absent.
+	AgentID(org, name string) (int64, error)
 	// RefreshUnit re-applies the systemd drop-in (hardening + tool-cache env) to
 	// an already-installed runner and restarts it, without a full recreate.
 	RefreshUnit(ctx context.Context, org, name string) error
@@ -832,6 +837,31 @@ func (u *ubuntu) RemoveRunner(ctx context.Context, name, org, removeToken string
 		_ = c.Run()
 	}
 	return os.RemoveAll(dir)
+}
+
+// dotRunner mirrors the fields srm needs from the agent's .runner file. agentId is
+// the GitHub runner id the REST API uses to deregister this exact runner.
+type dotRunner struct {
+	AgentID int64 `json:"agentId"`
+}
+
+// AgentID reads the GitHub runner id recorded in the agent's .runner file at
+// registration (written by config.sh). It is the host-local, host-bound identity
+// used to deregister THIS host's runner by id — never a name lookup across the org,
+// which could match (and delete) another host's same-named runner.
+func (u *ubuntu) AgentID(org, name string) (int64, error) {
+	data, err := os.ReadFile(filepath.Join(u.runnerDir(org, name), ".runner"))
+	if err != nil {
+		return 0, err
+	}
+	var dr dotRunner
+	if err := json.Unmarshal(data, &dr); err != nil {
+		return 0, fmt.Errorf("parse .runner: %w", err)
+	}
+	if dr.AgentID == 0 {
+		return 0, fmt.Errorf(".runner has no agentId")
+	}
+	return dr.AgentID, nil
 }
 
 // EphemeralSlotSpec describes one ephemeral slot lane to stand up on the host.
