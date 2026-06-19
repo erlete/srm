@@ -2,6 +2,7 @@ package runner
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -900,7 +901,9 @@ func (u *ubuntu) AgentID(org, name string) (int64, error) {
 		return 0, err
 	}
 	var dr dotRunner
-	if err := json.Unmarshal(data, &dr); err != nil {
+	// The agent (.NET) writes .runner as UTF-8 WITH a byte-order mark; strip it so
+	// encoding/json doesn't choke on the leading BOM bytes.
+	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}), &dr); err != nil {
 		return 0, fmt.Errorf("parse .runner: %w", err)
 	}
 	if dr.AgentID == 0 {
