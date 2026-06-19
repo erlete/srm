@@ -1,0 +1,13 @@
+srm — self-hosted runner manager
+Copyright 2026 Paulo Sánchez (@erlete)
+
+This product was created and is maintained by Paulo Sánchez (https://github.com/erlete).
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this software except in compliance with the License. A copy of the License is
+included in the LICENSE file and is available at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Any redistribution of this software or derivative works thereof must retain the
+attribution notices in this NOTICE file, as required by Section 4 of the License.

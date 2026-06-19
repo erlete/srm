@@ -1,0 +1,103 @@
+# srm configuration — prefer `srm init` over editing by hand.
+# Copy to /etc/srm/config.yaml (the standard for this sudo-operated tool; or
+# ~/.config/srm/config.yaml for non-root, or pass --config) and edit.
+#
+# Auth is GitHub App only. See docs/GITHUB_APP_SETUP.md for how to create the
+# App, which permissions to grant, and how to find the App ID / installation ID.
+#
+# Multiple organizations are supported. Operations name their org explicitly
+# (--org, or implicitly when only one is configured); the TUI cycles its view
+# across them at runtime (press 'o'). The App private key is NOT stored here —
+# reference it via privateKeyPath, or import it into the encrypted secrets store
+# (set SRM_SECRETS_PASSPHRASE and accept the prompt in `srm init`).
+
+# Bulk-operation fan-out (kept well under GitHub's 100-concurrent secondary limit).
+concurrency: 8
+
+# Pinned actions/runner release installed by the orchestrator (v1).
+runnerVersion: "2.335.1"
+
+# Dedicated non-login system user that owns runner dirs and runs the runner
+# services (runners never run as root). Created by `srm` provisioning (v1).
+runnerUser: srm
+
+# Optional: log to a file instead of stderr (the TUI never logs to stdout).
+logFile: ""
+
+# Preview mutations without calling GitHub. Can also be set with --dry-run.
+dryRun: false
+
+# Capacity / OOM caps (systemd cgroup v2, OPT-IN). Two ways to set them:
+#   resourceMode: auto  → RECOMMENDED. Machine-relative PERCENTAGE caps that
+#       systemd evaluates against the host's LIVE RAM, so resizing the box (more
+#       memory/cores) needs NO reconfiguration. srm also caps the runners'
+#       AGGREGATE memory with a parent srm.slice (75% of RAM), leaving headroom for
+#       the OS/sshd. Any `resources:` field below overrides a single auto value.
+#   (omit resourceMode) → use the literal `resources:` values verbatim; OMIT the
+#       whole `resources:` block too for unlimited (the historical default).
+# Either way, memorySwapMax "0" is the highest-value setting: it stops a hungry job
+# from swap-thrashing the host (which once wedged sshd). Apply changes to running
+# runners with `srm runners refresh`; `srm doctor` shows the effective set. Tune
+# these from the TUI Settings panel instead of editing by hand if you prefer.
+resourceMode: auto
+resources:
+  # These ARE the `auto` defaults, shown for reference — edit to override one
+  # value, or delete a line to keep the auto default. Use systemd syntax: a
+  # percentage ("25%", scales with the host) or an absolute ("3G", fixed). Quote
+  # bare numbers so they stay strings.
+  memoryHigh: 20%       # soft cap: kernel throttles + reclaims above this
+  memoryMax: 25%        # hard cap: one runner's cgroup is OOM-killed above this
+  memorySwapMax: "0"    # no swap for the cgroup → host stays responsive under pressure
+  # cpuWeight: "100"    # relative CPU share under contention (1..10000); default equal
+  # tasksMax: "4096"    # max processes/threads (fork-bomb guard); unset = unlimited
+
+# Aggregate memory ceiling for ALL runners combined (auto mode only). This is the
+# box-wide lever that prevents many moderate jobs from collectively OOM'ing the
+# host — a per-runner cap can't. Empty = the pre-packaged 75% of RAM. Systemd
+# percentage, so it scales with the host on resize. Editable from the TUI Settings
+# panel.
+# sliceMemoryMax: "75%"
+
+# Cross-org isolation (OPT-IN). By default every org's runners share the single
+# runnerUser and the host-wide caches — no boundary between orgs. With
+# perOrgUsers, each org runs as its own service user ("srm-<org>", or the per-org
+# runnerUser below) owning a private HOME (0700) + private dep/tool caches, so one
+# org cannot read another's runner credentials, checkouts, or caches. There is no
+# shared unix group (that would itself be a cross-org read channel); the tool
+# cache is per-org too. Roll out to existing runners one org at a time with
+# `srm runners refresh --org <org>` (migrates in place — no recreate).
+isolation:
+  perOrgUsers: true
+
+orgs:
+  - name: acme
+    appID: 123456
+    installationID: 7654321
+    privateKeyPath: /etc/srm/acme.pem   # omit if the key is in the secrets store
+    defaultGroupID: 1                    # 1 = the org's default runner group
+    defaultLabels: [self-hosted, linux, x64]
+    installRoot: /opt/actions-runners
+    profiles:
+      - name: build-heavy
+        labels: [build, docker]
+        groupID: 1
+        ephemeral: true                  # JIT, one job then auto-deregister
+        requireJobContainer: false       # false = jobs use the host-baked toolchain
+        manifest:
+          aptPackages: [build-essential, git, jq]
+          setupScripts:
+            - /etc/srm/setup/install-node.sh   # escape hatch for complex stacks
+          persistentCachePaths: [/opt/hostedtoolcache]
+
+  # A second org — install the same App on it (its own installation ID).
+  - name: globex
+    appID: 123456
+    installationID: 2345678
+    privateKeyPath: /etc/srm/globex.pem
+    defaultGroupID: 1
+    defaultLabels: [self-hosted, linux, x64]
+    installRoot: /opt/actions-runners
+    runnerUser: srm-globex   # optional: per-org service user (default srm-<org>; needs isolation.perOrgUsers)
+    resources:            # field-level override of the host/auto defaults above
+      memoryMax: 40%      # this org's jobs may use more of the box (other fields inherit;
+                          # mix % and absolute freely — e.g. "6G" for a fixed cap)

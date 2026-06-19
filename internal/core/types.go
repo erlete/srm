@@ -1,0 +1,101 @@
+// Package core holds the tool's domain types. It is a leaf package: it imports
+// nothing from the rest of the codebase, so every other layer (github adapter,
+// service, provision, runner, tui) can depend on it without import cycles.
+package core
+
+// Runner is a self-hosted runner as the tool reasons about it, decoupled from
+// the go-github wire types.
+type Runner struct {
+	ID        int64
+	Name      string
+	OS        string
+	Status    string // "online" | "offline"
+	Busy      bool
+	Ephemeral bool
+	GroupID   int64
+	Version   string
+	Labels    []Label
+}
+
+// Online reports whether the runner is currently connected to GitHub.
+func (r Runner) Online() bool { return r.Status == StatusOnline }
+
+// Idle reports whether the runner is online but not currently running a job.
+func (r Runner) Idle() bool { return r.Online() && !r.Busy }
+
+// Runner status values returned by the GitHub API.
+const (
+	StatusOnline  = "online"
+	StatusOffline = "offline"
+)
+
+// Label is a runner label. Read-only labels (self-hosted, the OS, the
+// architecture) are assigned by GitHub and cannot be removed; only custom
+// labels are mutable.
+type Label struct {
+	Name     string
+	ReadOnly bool
+}
+
+// Group is an organization runner group.
+type Group struct {
+	ID           int64
+	Name         string
+	Visibility   string // "all" | "selected" | "private"
+	Default      bool
+	AllowsPublic bool
+}
+
+// DependencyManifest describes the host-once dependency layer for a profile.
+// It is applied a single time during host provisioning, never per job.
+type DependencyManifest struct {
+	AptPackages          []string `koanf:"aptPackages" yaml:"aptPackages,omitempty"`                   // installed once on the host
+	SetupScripts         []string `koanf:"setupScripts" yaml:"setupScripts,omitempty"`                 // escape hatch for complex setups
+	ToolCacheSeeds       []string `koanf:"toolCacheSeeds" yaml:"toolCacheSeeds,omitempty"`             // tarballs to seed RUNNER_TOOL_CACHE
+	PersistentCachePaths []string `koanf:"persistentCachePaths" yaml:"persistentCachePaths,omitempty"` // host paths kept across jobs
+}
+
+// Empty reports whether the manifest declares nothing (bring-your-own-host).
+func (m DependencyManifest) Empty() bool {
+	return len(m.AptPackages) == 0 && len(m.SetupScripts) == 0 &&
+		len(m.ToolCacheSeeds) == 0 && len(m.PersistentCachePaths) == 0
+}
+
+// RunnerProfile is the unit the TUI lists/edits/applies. It bundles the GitHub
+// registration parameters with the host dependency layer the runners consume.
+type RunnerProfile struct {
+	Name                  string             `koanf:"name" yaml:"name"`
+	Labels                []string           `koanf:"labels" yaml:"labels,omitempty"`
+	GroupID               int64              `koanf:"groupID" yaml:"groupID"`
+	Ephemeral             bool               `koanf:"ephemeral" yaml:"ephemeral"` // JIT/one-job by default
+	Manifest              DependencyManifest `koanf:"manifest" yaml:"manifest,omitempty"`
+	DefaultContainerImage string             `koanf:"defaultContainerImage" yaml:"defaultContainerImage,omitempty"`
+	RequireJobContainer   bool               `koanf:"requireJobContainer" yaml:"requireJobContainer"`
+}
+
+// CreateSpec parameterizes a bulk runner-creation request.
+type CreateSpec struct {
+	Org        string
+	Profile    string
+	Count      int
+	NamePrefix string
+	Labels     []string
+	GroupID    int64
+	Ephemeral  bool
+}
+
+// DeleteResult reports the outcome of deleting a single runner.
+type DeleteResult struct {
+	ID   int64
+	Name string
+	Err  error
+}
+
+// ProgressEvent is emitted by bulk operations so the TUI can render live
+// progress without blocking.
+type ProgressEvent struct {
+	Index   int
+	Total   int
+	Message string
+	Err     error
+}
