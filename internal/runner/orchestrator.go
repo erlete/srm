@@ -116,6 +116,14 @@ type Orchestrator interface {
 	// PruneDepCache evicts build-tool cache entries not accessed within maxAge.
 	PruneDepCache(ctx context.Context, maxAge time.Duration, dryRun bool) (PruneStats, error)
 
+	// PurgeBase executes the host-base removals for `srm uninstall`: the named
+	// service users (userdel; absent users are skipped), the given absolute paths
+	// (recursively), and — when RemoveSlice is set — the aggregate srm.slice unit
+	// plus a daemon-reload. WHAT to remove (the never-touch-foreign-infra policy)
+	// is the caller's decision; this only performs the removals, idempotently,
+	// aggregating failures rather than stopping at the first.
+	PurgeBase(ctx context.Context, p BasePurge) error
+
 	// --- read-only host inspection for `srm reconcile` ---
 
 	// ListUnits returns the base names of all srm-managed PERSISTENT runner systemd
@@ -714,6 +722,43 @@ func (u *ubuntu) writeSliceFile() error {
 	}
 	path := filepath.Join("/etc/systemd/system", u.opts.Slice)
 	return os.WriteFile(path, []byte(renderSlice(u.opts)), 0o644)
+}
+
+// BasePurge selects the host-base artifacts PurgeBase removes during uninstall.
+type BasePurge struct {
+	Users       []string // service users to remove via userdel (absent users skipped)
+	Paths       []string // absolute dirs/files removed recursively (os.RemoveAll)
+	RemoveSlice bool     // remove /etc/systemd/system/srm.slice + daemon-reload
+}
+
+// PurgeBase performs the host-base removals for uninstall. It tolerates missing
+// users/paths (idempotent) and aggregates failures instead of stopping at the
+// first, so a partially-broken host still gets maximally cleaned.
+func (u *ubuntu) PurgeBase(ctx context.Context, p BasePurge) error {
+	var errs []string
+	for _, name := range p.Users {
+		if _, err := user.Lookup(name); err != nil {
+			continue // not present — nothing to remove
+		}
+		if out, err := exec.CommandContext(ctx, "userdel", name).CombinedOutput(); err != nil {
+			errs = append(errs, fmt.Sprintf("userdel %s: %v: %s", name, err, strings.TrimSpace(string(out))))
+		}
+	}
+	for _, path := range p.Paths {
+		if err := os.RemoveAll(path); err != nil {
+			errs = append(errs, fmt.Sprintf("remove %s: %v", path, err))
+		}
+	}
+	if p.RemoveSlice {
+		if err := os.Remove(filepath.Join("/etc/systemd/system", AggregateSlice)); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Sprintf("remove slice: %v", err))
+		}
+		_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // writeHardening installs the systemd drop-in for a runner's unit (see
