@@ -300,6 +300,14 @@ func (u *ubuntu) ensureBaseIsolated(ctx context.Context) error {
 	if err := os.Chmod(u.installRoot, 0o755); err != nil {
 		return err
 	}
+	// Shared tarball cache (installRoot/.cache): the actions/runner tarball is
+	// cached here for ALL orgs and written as root. It must be bootstrapped
+	// independently of any org subtree so a fresh host — or a recreate after a
+	// full uninstall removed installRoot — works with no manual setup. (Legacy
+	// mode creates this too; the isolated path previously omitted it.)
+	if err := os.MkdirAll(filepath.Join(u.installRoot, ".cache"), 0o755); err != nil {
+		return err
+	}
 	if err := mkdirOwned(ctx, home, 0o700, user); err != nil {
 		return err
 	}
@@ -426,6 +434,11 @@ func httpDownload(ctx context.Context, url, dst string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
+	}
+	// Self-bootstrap the destination dir: install must assume nothing pre-exists
+	// (e.g. {installRoot}/.cache after a full uninstall removed installRoot).
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
 	}
 	tmp := dst + ".tmp"
 	f, err := os.Create(tmp)
@@ -1093,6 +1106,11 @@ func (u *ubuntu) PendingJIT(org, slot string) int64 {
 // RecordJIT persists the just-minted runner id (fsync'd) BEFORE the job runs, so a
 // crash/reboot mid-job leaves a reapable id for the next cycle.
 func (u *ubuntu) RecordJIT(org, slot string, id int64) error {
+	// Self-bootstrap the control dir so a cycle survives /var/lib/srm having been
+	// removed (e.g. by a prior uninstall) — never crash recording the JIT id.
+	if err := os.MkdirAll(filepath.Dir(u.jitIDPath(org, slot)), 0o700); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(u.jitIDPath(org, slot), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
