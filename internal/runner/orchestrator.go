@@ -566,8 +566,11 @@ func (u *ubuntu) teardownService(ctx context.Context, dir, svc string) {
 // byte-equality, so a mixed-version fleet converges upward instead of thrashing: a
 // host whose binary is older than an on-disk marker leaves that drop-in alone
 // (authoritative-skip), and a newer binary owns the bump. Bump the integer (AND the
-// matching "# srm-...-vN" line in the const below) ONLY when the rendered body
-// intentionally changes; TestRenderDropIn asserts the two stay in lockstep.
+// matching "# srm-...-vN" line in the const below) whenever the rendered body
+// intentionally changes: a changed body without a bump lets two same-marker hosts
+// see each other as drift. TestRenderDropInGolden trips on any body change (so the
+// bump isn't forgotten) and TestTemplateVersionMarkers pins the stamped marker to
+// the const.
 const (
 	CurrentDropInVersion    = 1
 	CurrentEphemeralVersion = 1

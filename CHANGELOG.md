@@ -13,8 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owns (`refresh` re-renders and stamps it), an equal marker falls through to the
   existing conformance check, and a *newer* marker is authoritative-skipped (new
   `dropin-newer` / `ephemeral-newer` classes) so a mixed-version fleet converges
-  upward instead of two hosts rewriting each other's units. The control-plane
-  groundwork for staged progressive updates.
+  upward instead of two hosts rewriting each other's units. The marker is compared
+  ignoring its own comment line, so existing markerless units upgrade seamlessly:
+  they read as conformant (no drift churn, no restarts) and pick up the marker on
+  their next real template change or recreate. The control-plane groundwork for
+  staged progressive updates.
 
 ## [1.2.1] - 2026-06-21
 

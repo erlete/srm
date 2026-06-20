@@ -139,27 +139,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 			st.Online = row.Runner.Status == "online"
 			st.Busy = row.Runner.Busy
 		}
-		switch {
-		case !on && !listedOK[org]:
-			st.Class, st.Detail = ClassUnknown, "GitHub list failed for this org - not classified (no fix)"
-		case !on:
-			st.Class, st.Detail = ClassOrphanUnit, "host unit not registered on GitHub"
-		case insp.HasFlatTree && !insp.HasTree:
-			st.Class, st.Detail = ClassLegacyFlat, "install tree at legacy flat path"
-		case insp.DropInNewer:
-			// The on-disk drop-in was written by a NEWER srm. Never rewrite it back
-			// down: an older binary authoritative-skips so a mixed-version fleet
-			// converges upward instead of two hosts ping-ponging the same drop-in.
-			st.Class, st.Detail = ClassDropInNewer, fmt.Sprintf("drop-in template v%d is newer than this srm (v%d) - update the binary", insp.DropInVer, runner.CurrentDropInVersion)
-		case !insp.DropInOK:
-			st.Class, st.Detail = ClassStaleDropIn, "drop-in differs from expected (cache env / limits / user / older template)"
-		case !insp.Active:
-			st.Class, st.Detail = ClassStuck, "unit not active"
-		case !st.Online:
-			st.Class, st.Detail = ClassStuck, "active locally but offline on GitHub"
-		default:
-			st.Class = ClassHealthy
-		}
+		st.Class, st.Detail = classifyPersistent(insp, on, listedOK[org], st.Online)
 		rep.Runners = append(rep.Runners, st)
 	}
 
@@ -182,20 +162,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 			MemPeak: insp.MemPeakBytes, MemMax: insp.MemMaxBytes,
 			MemCur: insp.MemCurBytes, OOMKills: insp.OOMKills,
 		}
-		switch {
-		case insp.Active && insp.Restarts < EphemeralRestartThreshold && insp.UnitOK:
-			st.Class, st.Detail = ClassEphemeralSlot, "ephemeral slot healthy"
-		case !insp.Active:
-			st.Class, st.Detail = ClassEphemeralStuck, "ephemeral slot inactive"
-		case insp.UnitNewer:
-			// Authoritative-skip: a newer srm wrote this lane unit; don't flag it for
-			// recreate-down from an older binary (see ClassDropInNewer).
-			st.Class, st.Detail = ClassEphemeralNewer, fmt.Sprintf("ephemeral unit template v%d is newer than this srm (v%d) - update the binary", insp.UnitVer, runner.CurrentEphemeralVersion)
-		case !insp.UnitOK:
-			st.Class, st.Detail = ClassEphemeralStuck, "ephemeral unit drifted from expected (recreate to apply)"
-		default:
-			st.Class, st.Detail = ClassEphemeralStuck, fmt.Sprintf("ephemeral slot crash-looping (%d restarts)", insp.Restarts)
-		}
+		st.Class, st.Detail = classifyEphemeral(insp)
 		rep.Runners = append(rep.Runners, st)
 	}
 
@@ -308,6 +275,52 @@ func (m *Manager) reapGhost(ctx context.Context, rep *ReconcileReport, row Runne
 		}
 	}
 	rep.Reaped = append(rep.Reaped, rs)
+}
+
+// classifyPersistent maps a persistent runner's inspected state to a drift class.
+// Pure and ORDER-SENSITIVE, kept standalone so the ordering is unit-tested: a
+// newer-generation drop-in also fails the conformance check (DropInOK=false), so
+// DropInNewer MUST be evaluated before !DropInOK or we would refresh a newer host's
+// drop-in back down (the ping-pong the marker exists to prevent). online is the
+// runner's GitHub online state (meaningful only when onGitHub).
+func classifyPersistent(insp runner.Inspection, onGitHub, orgListedOK, online bool) (class, detail string) {
+	switch {
+	case !onGitHub && !orgListedOK:
+		return ClassUnknown, "GitHub list failed for this org - not classified (no fix)"
+	case !onGitHub:
+		return ClassOrphanUnit, "host unit not registered on GitHub"
+	case insp.HasFlatTree && !insp.HasTree:
+		return ClassLegacyFlat, "install tree at legacy flat path"
+	case insp.DropInNewer:
+		return ClassDropInNewer, fmt.Sprintf("drop-in template v%d is newer than this srm (v%d) - update the binary", insp.DropInVer, runner.CurrentDropInVersion)
+	case !insp.DropInOK:
+		return ClassStaleDropIn, "drop-in differs from expected (cache env / limits / user / older template)"
+	case !insp.Active:
+		return ClassStuck, "unit not active"
+	case !online:
+		return ClassStuck, "active locally but offline on GitHub"
+	default:
+		return ClassHealthy, ""
+	}
+}
+
+// classifyEphemeral maps an ephemeral slot's host-only inspected state to a class.
+// Pure and order-sensitive (unit-tested): UnitNewer is evaluated before the
+// stuck/drift cases so an older binary authoritative-skips a newer host's lane unit
+// rather than reporting it as drift-to-recreate (mirrors classifyPersistent).
+func classifyEphemeral(insp runner.EphemeralInspection) (class, detail string) {
+	switch {
+	case insp.Active && insp.Restarts < EphemeralRestartThreshold && insp.UnitOK:
+		return ClassEphemeralSlot, "ephemeral slot healthy"
+	case insp.UnitNewer:
+		return ClassEphemeralNewer, fmt.Sprintf("ephemeral unit template v%d is newer than this srm (v%d) - update the binary", insp.UnitVer, runner.CurrentEphemeralVersion)
+	case !insp.Active:
+		return ClassEphemeralStuck, "ephemeral slot inactive"
+	case !insp.UnitOK:
+		return ClassEphemeralStuck, "ephemeral unit drifted from expected (recreate to apply)"
+	default:
+		return ClassEphemeralStuck, fmt.Sprintf("ephemeral slot crash-looping (%d restarts)", insp.Restarts)
+	}
 }
 
 // repairRunner applies (or, when apply=false, plans) the host-side fix for a
