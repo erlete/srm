@@ -33,7 +33,7 @@ func TestRenderDropIn(t *testing.T) {
 		t.Error("renderDropIn is not deterministic")
 	}
 
-	// Single-user (default) mode must NOT emit a User= directive — the drop-in is
+	// Single-user (default) mode must NOT emit a User= directive - the drop-in is
 	// byte-identical to the pre-isolation output.
 	if strings.Contains(got, "User=") {
 		t.Errorf("default-mode drop-in must not contain User=:\n%s", got)
@@ -96,7 +96,7 @@ func TestRenderDropInResources(t *testing.T) {
 			MemoryMax:     "3G",
 			MemorySwapMax: "0",
 			TasksMax:      "4096",
-			// CPUWeight deliberately unset — must be omitted.
+			// CPUWeight deliberately unset - must be omitted.
 		},
 	}
 	got := renderDropIn(opts)
@@ -230,7 +230,7 @@ func TestEphemeralNaming(t *testing.T) {
 	}
 
 	// EphemeralSlotFromName drives the reaper's safety gate, so its parsing must be
-	// exact — including org names with dashes, and rejecting foreign/malformed names.
+	// exact - including org names with dashes, and rejecting foreign/malformed names.
 	for _, c := range []struct {
 		name, org, wantSlot string
 		wantOK              bool

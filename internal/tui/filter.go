@@ -10,8 +10,8 @@ import (
 // filterState is the incremental text filter shared by every filterable view
 // (Persistent, Ephemeral, Groups, Health). It owns the textinput and the focus
 // flag; each view supplies its own haystack by calling query() inside its
-// applyFilter. Centralizing it means "/" behaves identically on every tab — focus
-// to type, esc clears, enter keeps — and the views differ only in WHAT they match.
+// applyFilter. Centralizing it means "/" behaves identically on every tab - focus
+// to type, esc clears, enter keeps - and the views differ only in WHAT they match.
 type filterState struct {
 	input  textinput.Model
 	active bool // the input is focused (capturing keystrokes)

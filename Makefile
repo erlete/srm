@@ -1,4 +1,4 @@
-# srm — build/install. The only supported runtime target is Ubuntu x64.
+# srm - build/install. The only supported runtime target is Ubuntu x64.
 BINARY      := srm
 VERSION     ?= dev
 PREFIX      ?= /usr/local
@@ -10,7 +10,7 @@ LDFLAGS     := -s -w -X main.version=$(VERSION)
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/srm
 
-## build-linux: static linux/amd64 binary (CGO off — all deps are pure Go)
+## build-linux: static linux/amd64 binary (CGO off - all deps are pure Go)
 build-linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY) ./cmd/srm
 

@@ -79,14 +79,14 @@ type RunnerSpec struct {
 // Orchestrator manages the on-machine actions/runner agent on Ubuntu x64. Its
 // methods must run as root: they create a dedicated user, install systemd
 // services, and run apt via installdependencies.sh. The agent itself never runs
-// as root — it is configured and run as the dedicated user.
+// as root - it is configured and run as the dedicated user.
 type Orchestrator interface {
 	EnsureBase(ctx context.Context) error
 	CreateRunner(ctx context.Context, spec RunnerSpec, dl Download, regToken string) error
 	RemoveRunner(ctx context.Context, name, org, removeToken string) error
 	// AgentID reads the GitHub runner id the agent recorded locally in its .runner
 	// file at registration. This host-local, host-bound id is how a runner must be
-	// deregistered — never a name lookup across the org, which can resolve to
+	// deregistered - never a name lookup across the org, which can resolve to
 	// another host's same-named runner. Returns an error if the file is absent.
 	AgentID(org, name string) (int64, error)
 	// RefreshUnit re-applies the systemd drop-in (hardening + tool-cache env) to
@@ -107,7 +107,7 @@ type Orchestrator interface {
 	// RunJob resets the slot's per-job workspace, drops from root to the per-org
 	// user, and runs run.sh for EXACTLY one job with the given JIT config. Root-only.
 	RunJob(ctx context.Context, org, slot, jitConfig string) error
-	// PendingJIT returns the runner id recorded for an in-flight cycle (0 if none) —
+	// PendingJIT returns the runner id recorded for an in-flight cycle (0 if none) -
 	// a non-zero value after a crash is a ghost the caller should deregister.
 	PendingJIT(org, slot string) int64
 	// RecordJIT persists (fsync) the just-minted runner id BEFORE the job runs, so a
@@ -119,7 +119,7 @@ type Orchestrator interface {
 
 	// PurgeBase executes the host-base removals for `srm uninstall`: the named
 	// service users (userdel; absent users are skipped), the given absolute paths
-	// (recursively), and — when RemoveSlice is set — the aggregate srm.slice unit
+	// (recursively), and - when RemoveSlice is set - the aggregate srm.slice unit
 	// plus a daemon-reload. WHAT to remove (the never-touch-foreign-infra policy)
 	// is the caller's decision; this only performs the removals, idempotently,
 	// aggregating failures rather than stopping at the first.
@@ -140,14 +140,14 @@ type Orchestrator interface {
 	Inspect(ctx context.Context, org, name string) Inspection
 	// InspectEphemeral gathers host-side health for one ephemeral slot lane (unit
 	// presence, active, restart count, cgroup memory). An ephemeral slot is judged
-	// by host health alone — never by GitHub registration presence.
+	// by host health alone - never by GitHub registration presence.
 	InspectEphemeral(ctx context.Context, org, slot string) EphemeralInspection
 	// HostDisk reports filesystem usage for each path (best-effort; df-based).
 	HostDisk(ctx context.Context, paths []string) []DiskStat
 	// DirSize returns the total size of a directory in bytes, or -1 on error.
 	DirSize(ctx context.Context, path string) int64
 	// SliceUsage reports the aggregate srm.slice live memory and hard cap (cgroup
-	// v2 memory.current / memory.max), or (-1, -1) when the slice doesn't exist —
+	// v2 memory.current / memory.max), or (-1, -1) when the slice doesn't exist -
 	// i.e. no auto-capacity mode. This is the box-wide ceiling for all runners
 	// combined, the real multi-job OOM guard.
 	SliceUsage(ctx context.Context) (current, max int64)
@@ -155,8 +155,8 @@ type Orchestrator interface {
 
 // Options bundles the host-layout knobs an orchestrator needs beyond installRoot.
 // Passing a struct (instead of a widening positional list) lets the caller derive
-// per-org values from config — the dedicated user and cache roots today, resource
-// limits and per-org isolation later — while keeping NewUbuntu's signature stable.
+// per-org values from config - the dedicated user and cache roots today, resource
+// limits and per-org isolation later - while keeping NewUbuntu's signature stable.
 // Zero-valued fields fall back to the package defaults.
 type Options struct {
 	User      string // dedicated non-login service user that owns runner dirs
@@ -177,7 +177,7 @@ type Options struct {
 	// Empty (the default) leaves units in system.slice, byte-identical to before.
 	Slice string
 	// SliceMemoryMax is the aggregate memory ceiling written onto Slice (systemd
-	// syntax, e.g. "75%"). It bounds ALL runners in the slice TOGETHER — the lever
+	// syntax, e.g. "75%"). It bounds ALL runners in the slice TOGETHER - the lever
 	// that prevents many moderate jobs from collectively OOM'ing the host, which a
 	// per-runner cap cannot. Ignored when Slice is empty.
 	SliceMemoryMax string
@@ -235,7 +235,7 @@ func (u *ubuntu) EnsureBase(ctx context.Context) error {
 }
 
 // ensureBaseLegacy is the historical single-user behavior: one user owns the
-// whole installRoot and the host-wide tool/dep caches. UNCHANGED — do not factor
+// whole installRoot and the host-wide tool/dep caches. UNCHANGED - do not factor
 // this through the isolated path; the divergence is too easy to get subtly wrong.
 func (u *ubuntu) ensureBaseLegacy(ctx context.Context) error {
 	if err := exec.CommandContext(ctx, "id", u.opts.User).Run(); err != nil {
@@ -268,7 +268,7 @@ func (u *ubuntu) ensureBaseLegacy(ctx context.Context) error {
 
 // ensureBaseIsolated creates a per-org service user that owns ONLY its org
 // subtree and private caches. Isolation is by separate ownership + 0700
-// directories — deliberately NO shared unix group (a shared group would be a
+// directories - deliberately NO shared unix group (a shared group would be a
 // cross-org read channel). Every chown is surgically scoped to this org's paths;
 // nothing here ever touches the shared installRoot tree or a sibling org's files,
 // so it is safe to run per-org and re-entrant. Parent dirs are created
@@ -289,7 +289,7 @@ func (u *ubuntu) ensureBaseIsolated(ctx context.Context) error {
 
 	// Org HOME subtree: private (0700), owner = the org user. The parent
 	// installRoot must be TRAVERSABLE by every per-org user (each is "other"
-	// relative to it), so force 0755 explicitly — MkdirAll leaves an existing
+	// relative to it), so force 0755 explicitly - MkdirAll leaves an existing
 	// dir's mode untouched and the legacy single-user layout created it 0750,
 	// which would deny traversal and fail the unit with 200/CHDIR. The parent is
 	// never chowned (siblings live under it); only its mode is widened to allow
@@ -302,8 +302,8 @@ func (u *ubuntu) ensureBaseIsolated(ctx context.Context) error {
 	}
 	// Shared tarball cache (installRoot/.cache): the actions/runner tarball is
 	// cached here for ALL orgs and written as root. It must be bootstrapped
-	// independently of any org subtree so a fresh host — or a recreate after a
-	// full uninstall removed installRoot — works with no manual setup. (Legacy
+	// independently of any org subtree so a fresh host - or a recreate after a
+	// full uninstall removed installRoot - works with no manual setup. (Legacy
 	// mode creates this too; the isolated path previously omitted it.)
 	if err := os.MkdirAll(filepath.Join(u.installRoot, ".cache"), 0o755); err != nil {
 		return err
@@ -351,7 +351,7 @@ func (u *ubuntu) ensureBaseIsolated(ctx context.Context) error {
 
 // ensureTraversable makes a shared parent directory exist and be traversable by
 // every per-org user (each is "other" relative to it). MkdirAll's mode is masked
-// by the process umask, so the mode is forced with an explicit Chmod — on a
+// by the process umask, so the mode is forced with an explicit Chmod - on a
 // hardened-umask host the parent would otherwise be created without o+x and per-
 // org runners (which are "other" here) could not reach their own subdir. The
 // parent is never chowned (siblings live under it); only its mode is widened.
@@ -558,7 +558,7 @@ func (u *ubuntu) teardownService(ctx context.Context, dir, svc string) {
 // adds defense-in-depth that does NOT break typical CI: the runner already runs
 // as a non-root user, and these add namespace/kernel protections. The stricter
 // options (NoNewPrivileges / ProtectSystem=strict / RestrictSUIDSGID) are
-// deliberately omitted — they break workflows that use sudo or apt — but are
+// deliberately omitted - they break workflows that use sudo or apt - but are
 // listed commented for hosts whose jobs never need them.
 const hardeningDropIn = `[Service]
 # Managed by srm. Defense-in-depth hardening that is safe for general CI.
@@ -572,7 +572,7 @@ ProtectClock=true
 ProtectHostname=true
 LockPersonality=true
 RestrictRealtime=true
-# Stricter, opt-in (break sudo/apt — enable only if your jobs never need them):
+# Stricter, opt-in (break sudo/apt - enable only if your jobs never need them):
 #   NoNewPrivileges=true
 #   ProtectSystem=strict
 #   ReadWritePaths=<runner dir>
@@ -607,7 +607,7 @@ func renderDropIn(opts Options) string {
 	}
 	// In isolated mode the drop-in pins User= so the unit runs as the per-org
 	// service user. Setting it here (not just via svc.sh install) is what lets
-	// RefreshUnit migrate an existing runner's user in place — rewrite the drop-in
+	// RefreshUnit migrate an existing runner's user in place - rewrite the drop-in
 	// + re-chown its tree + restart, no recreate/re-register. Omitted entirely in
 	// single-user mode so the default drop-in stays byte-identical.
 	if opts.Isolated && opts.User != "" {
@@ -619,9 +619,9 @@ func renderDropIn(opts Options) string {
 
 // writeEnvAndLimits appends the [Service] directives shared by the persistent
 // drop-in and the ephemeral unit: the tool-cache pointer, every build-tool cache
-// env var, and the cgroup resource caps (omitted when unset — opt-in; MemorySwapMax=0
+// env var, and the cgroup resource caps (omitted when unset - opt-in; MemorySwapMax=0
 // keeps a hungry job from swap-thrashing the host). Centralizing them keeps the two
-// unit kinds in lockstep — a cache var or cap added here lands in both — and the
+// unit kinds in lockstep - a cache var or cap added here lands in both - and the
 // output deterministic, so reconcile's byte-equality drift check stays valid.
 func writeEnvAndLimits(b *strings.Builder, opts Options) {
 	b.WriteString("Environment=AGENT_TOOLSDIRECTORY=" + opts.ToolCache + "\n")
@@ -642,7 +642,7 @@ func writeEnvAndLimits(b *strings.Builder, opts Options) {
 // setuid-regain hole that is sharper here because the unit's parent is root),
 // ProtectProc=invisible hides other users' processes (so a job can't read another
 // org's /proc/<pid>/cmdline), and LimitCORE=0 suppresses core dumps. ProcSubset is
-// deliberately NOT set to pid — it would hide /proc/cpuinfo and break nproc-based
+// deliberately NOT set to pid - it would hide /proc/cpuinfo and break nproc-based
 // build parallelism. NoNewPrivileges blocks privilege GAIN only; root dropping to
 // the per-org user via setpriv still works.
 const ephemeralHardening = `# Managed by srm. Ephemeral-lane hardening (stricter than the persistent drop-in).
@@ -664,7 +664,7 @@ LimitCORE=0
 // renderEphemeralUnit produces the COMPLETE systemd unit for an ephemeral slot
 // lane. Unlike the persistent path (svc.sh's unit + a drop-in), srm authors the
 // whole unit here. It starts as ROOT (no User=) because each cycle mints a JIT
-// config from the App key before dropping to the per-org user — that drop happens
+// config from the App key before dropping to the per-org user - that drop happens
 // inside `srm _runner-cycle`, not via the unit's User=. Restart=always makes the
 // lane a warm mint→run→reset loop (one job per process). StartLimitIntervalSec=0
 // lets a healthy slot churn jobs fast without tripping systemd's start limiter (a
@@ -728,7 +728,7 @@ func renderSlice(opts Options) string {
 	return b.String()
 }
 
-// writeSliceFile writes the aggregate slice unit (no daemon-reload — the caller
+// writeSliceFile writes the aggregate slice unit (no daemon-reload - the caller
 // reloads once after the drop-in too). No-op when no slice is configured.
 func (u *ubuntu) writeSliceFile() error {
 	if u.opts.Slice == "" {
@@ -752,7 +752,7 @@ func (u *ubuntu) PurgeBase(ctx context.Context, p BasePurge) error {
 	var errs []string
 	for _, name := range p.Users {
 		if _, err := user.Lookup(name); err != nil {
-			continue // not present — nothing to remove
+			continue // not present - nothing to remove
 		}
 		if out, err := exec.CommandContext(ctx, "userdel", name).CombinedOutput(); err != nil {
 			errs = append(errs, fmt.Sprintf("userdel %s: %v: %s", name, err, strings.TrimSpace(string(out))))
@@ -794,7 +794,7 @@ func (u *ubuntu) writeHardening(ctx context.Context, svc string) error {
 
 // RefreshUnit re-writes a runner's systemd drop-in (picking up any change to the
 // hardening directives or the tool-cache env) and restarts the service so the
-// new Environment= takes effect — no reconfigure/recreate. The caller is
+// new Environment= takes effect - no reconfigure/recreate. The caller is
 // responsible for skipping busy runners (restart aborts a running job).
 func (u *ubuntu) RefreshUnit(ctx context.Context, org, name string) error {
 	svc := u.svcName(org, name)
@@ -823,7 +823,7 @@ func (u *ubuntu) CreateRunner(ctx context.Context, spec RunnerSpec, dl Download,
 	svc := u.svcName(spec.Org, spec.Name)
 
 	// Fully remove any prior install of this runner (incl. its systemd unit) so
-	// the install below is idempotent — svc.sh install won't overwrite a unit.
+	// the install below is idempotent - svc.sh install won't overwrite a unit.
 	u.teardownService(ctx, dir, svc)
 	if err := os.RemoveAll(dir); err != nil {
 		return err
@@ -906,7 +906,7 @@ type dotRunner struct {
 
 // AgentID reads the GitHub runner id recorded in the agent's .runner file at
 // registration (written by config.sh). It is the host-local, host-bound identity
-// used to deregister THIS host's runner by id — never a name lookup across the org,
+// used to deregister THIS host's runner by id - never a name lookup across the org,
 // which could match (and delete) another host's same-named runner.
 func (u *ubuntu) AgentID(org, name string) (int64, error) {
 	data, err := os.ReadFile(filepath.Join(u.runnerDir(org, name), ".runner"))
@@ -956,7 +956,7 @@ func (u *ubuntu) ephemeralSlotDir(org, slot string) string {
 }
 
 // ephemeralControlDir is the root-owned 0700 directory holding the slot's jit-id
-// and jit-params — see ephemeralStateRoot for why it is separate from the slot tree.
+// and jit-params - see ephemeralStateRoot for why it is separate from the slot tree.
 func (u *ubuntu) ephemeralControlDir(org, slot string) string {
 	return filepath.Join(ephemeralStateRoot, org, slot)
 }
@@ -1007,12 +1007,12 @@ func (u *ubuntu) EnsureEphemeralSlot(ctx context.Context, spec EphemeralSlotSpec
 		return err
 	}
 	// The org dir, .ephemeral parent, and slot dir are owned by the per-org user so
-	// the dropped run.sh can traverse + write them (mode forced via mkdirOwned —
+	// the dropped run.sh can traverse + write them (mode forced via mkdirOwned -
 	// MkdirAll is umask-masked). The org dir MUST be owned here in BOTH modes: in
 	// isolated mode EnsureBase already made it the user's 0700 HOME, but in legacy
 	// mode ensureBaseLegacy never creates {installRoot}/{org}, so MkdirAll would
 	// leave it root:root and run.sh (as the dropped user) could not traverse it
-	// (200/CHDIR) — exactly the perms class the persistent path chowns for.
+	// (200/CHDIR) - exactly the perms class the persistent path chowns for.
 	if err := mkdirOwned(ctx, filepath.Join(u.installRoot, spec.Org), 0o700, u.opts.User); err != nil {
 		return err
 	}
@@ -1036,7 +1036,7 @@ func (u *ubuntu) EnsureEphemeralSlot(ctx context.Context, spec EphemeralSlotSpec
 	if err := run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, dir); err != nil {
 		return err
 	}
-	// Persist the JIT mint params in the ROOT-only control dir (NOT the slot tree —
+	// Persist the JIT mint params in the ROOT-only control dir (NOT the slot tree -
 	// the dropped job owns the slot tree and must not be able to poison them).
 	ctrl := u.ephemeralControlDir(spec.Org, spec.Slot)
 	if err := os.MkdirAll(ctrl, 0o700); err != nil {
@@ -1107,7 +1107,7 @@ func (u *ubuntu) PendingJIT(org, slot string) int64 {
 // crash/reboot mid-job leaves a reapable id for the next cycle.
 func (u *ubuntu) RecordJIT(org, slot string, id int64) error {
 	// Self-bootstrap the control dir so a cycle survives /var/lib/srm having been
-	// removed (e.g. by a prior uninstall) — never crash recording the JIT id.
+	// removed (e.g. by a prior uninstall) - never crash recording the JIT id.
 	if err := os.MkdirAll(filepath.Dir(u.jitIDPath(org, slot)), 0o700); err != nil {
 		return err
 	}
@@ -1135,7 +1135,7 @@ func (u *ubuntu) ClearJIT(org, slot string) error {
 }
 
 // RunJob resets the slot's per-job workspace (keeping the warm agent tree), drops
-// from root to the per-org user via setpriv (PAM-free, unlike runuser — no session
+// from root to the per-org user via setpriv (PAM-free, unlike runuser - no session
 // scope to fight the slice placement), and runs run.sh for EXACTLY one job. Must
 // run as root.
 //
@@ -1146,14 +1146,14 @@ func (u *ubuntu) ClearJIT(org, slot string) error {
 // the ephemeral unit sets ProtectProc=invisible (hiding it from other per-org
 // users' process views), and per-org isolation separates the uids. (A global
 // hidepid / ProtectProc on the persistent units would close the residual
-// same-host cross-unit window — tracked as a follow-on hardening.)
+// same-host cross-unit window - tracked as a follow-on hardening.)
 func (u *ubuntu) RunJob(ctx context.Context, org, slot, jitConfig string) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("RunJob must run as root to drop to %s", u.opts.User)
 	}
 	dir := u.ephemeralSlotDir(org, slot)
 	// Fresh per-job workspace: wipe the mutable layer (and any prior JIT runtime
-	// creds run.sh materialized — they belong to a spent registration), keeping the
+	// creds run.sh materialized - they belong to a spent registration), keeping the
 	// warm agent binaries. run.sh re-creates .runner/.credentials from the new JIT
 	// config each cycle, so removing stale ones here leaves no creds at rest between
 	// jobs.

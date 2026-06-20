@@ -162,12 +162,12 @@ func runInit() error {
 
 // firstRunSetup is the guided wizard bare `srm` runs when no orgs are configured
 // yet: it collects one or more orgs through the same form as `srm init`, writes
-// the config, and verifies each org's GitHub auth — so a brand-new user never has
+// the config, and verifies each org's GitHub auth - so a brand-new user never has
 // to hand-edit config.yaml before reaching a working TUI. It returns nil after a
 // successful write (the caller reloads to pick up the orgs) and also when the user
 // aborts (a no-op exit), distinguished by whether any org was written.
 func firstRunSetup() error {
-	fmt.Println("⬢ srm — first-run setup")
+	fmt.Println("⬢ srm - first-run setup")
 	fmt.Printf("No organizations are configured yet. Let's add one.\n"+
 		"This writes %s (see docs/GITHUB_APP_SETUP.md for the App ID, installation ID, and key).\n\n", flagConfig)
 
@@ -179,9 +179,9 @@ func firstRunSetup() error {
 	for {
 		oc, err := collectOrg(defaultOrgFields())
 		if err != nil {
-			// huh returns ErrUserAborted on ctrl+c / esc — treat as a clean cancel.
+			// huh returns ErrUserAborted on ctrl+c / esc - treat as a clean cancel.
 			if errors.Is(err, huh.ErrUserAborted) {
-				fmt.Println("Setup cancelled — run `srm init` when you're ready.")
+				fmt.Println("Setup cancelled - run `srm init` when you're ready.")
 				return nil
 			}
 			return err

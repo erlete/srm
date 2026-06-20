@@ -44,7 +44,7 @@ func TestParseEphemeralUnitName(t *testing.T) {
 		{"actions.ephemeral.Acme.3.service", "Acme", "3", true},
 		{"actions.ephemeral.Globex.1.service", "Globex", "1", true},
 		{"actions.ephemeral.AB.x.service", "AB", "x", true},           // longest-prefix wins over "A"
-		{"actions.runner.Acme.temporal-1.service", "", "", false}, // PERSISTENT unit — not ephemeral
+		{"actions.runner.Acme.temporal-1.service", "", "", false}, // PERSISTENT unit - not ephemeral
 		{"actions.ephemeral.Unknown.1.service", "", "", false},        // not a configured org
 		{"actions.ephemeral.Acme.service", "", "", false},         // no slot segment
 		{"some-other-unit.service", "", "", false},                    // unrelated

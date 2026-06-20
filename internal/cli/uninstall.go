@@ -38,7 +38,7 @@ func newUninstallCmd() *cobra.Command {
 				opts.KeepBinary = true
 			}
 
-			// Always show the plan first — no mutation, no GitHub calls.
+			// Always show the plan first - no mutation, no GitHub calls.
 			saved := mgr.Config().DryRun
 			mgr.Config().DryRun = true
 			plan, err := mgr.Uninstall(cmd.Context(), opts)
@@ -79,7 +79,7 @@ func newUninstallCmd() *cobra.Command {
 }
 
 func printUninstallPlan(r service.UninstallReport) {
-	fmt.Println("srm uninstall — plan:")
+	fmt.Println("srm uninstall - plan:")
 	uninstallList("persistent runners", r.Persistent)
 	uninstallList("ephemeral lanes", r.Ephemeral)
 	uninstallList("service users", r.Users)

@@ -1,6 +1,6 @@
 // Package auth resolves an authenticated *http.Client for an org using its
 // GitHub App installation. Installation tokens auto-refresh (~1h), are
-// least-privilege, and raise rate limits. App auth is the only supported mode —
+// least-privilege, and raise rate limits. App auth is the only supported mode -
 // see docs/GITHUB_APP_SETUP.md.
 package auth
 

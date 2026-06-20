@@ -7,33 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Config **`schemaVersion`** — the config file now carries a schema generation that
+- Config **`schemaVersion`** - the config file now carries a schema generation that
   srm stamps and migrates forward on load. A config written by a *newer* srm is
   refused rather than silently lossy-loaded (koanf drops unknown keys). The
   control-plane foundation for progressive in-place updates; existing unversioned
   configs are adopted automatically.
 
-## [1.1.0] — 2026-06-20
+## [1.1.0] - 2026-06-20
 
-Lifecycle, onboarding, and UX additions (backward-compatible — existing configs
+Lifecycle, onboarding, and UX additions (backward-compatible - existing configs
 and hosts keep working untouched).
 
 ### Added
-- **`srm uninstall`** — a safe, scoped purge of srm's host footprint (runners,
+- **`srm uninstall`** - a safe, scoped purge of srm's host footprint (runners,
   ephemeral lanes, per-org users, caches, slice). Scope flags
   `--force` / `--keep-config` / `--keep-binary` / `--keep-github` / `--purge`, a
   drain gate that refuses to tear down a busy runner or in-flight lane (override
   with `--force`), a `--dry-run` plan preview, and a typed-hostname confirmation
   (`--yes` for automation). Shared infra (`/opt/hostedtoolcache`) and config are
   preserved unless `--purge`.
-- **`srm backup` / `srm restore`** — archive the config directory (`config.yaml`,
+- **`srm backup` / `srm restore`** - archive the config directory (`config.yaml`,
   App keys, `secrets.age`) to a `.tar.gz` and restore it (path-traversal-safe,
   re-asserting file modes). `uninstall --purge` takes an automatic backup first.
-- **Guided first-run setup** — bare `srm` on an unconfigured host now runs an
+- **Guided first-run setup** - bare `srm` on an unconfigured host now runs an
   interactive wizard (reusing `srm init`'s form) that writes the config and
   verifies GitHub auth before launching the TUI, so a new user never hand-edits
   `config.yaml`. `srm init` is kept for CI, re-init, and adding another org.
-- **Filtering on every list view** — the `/` incremental filter now works on the
+- **Filtering on every list view** - the `/` incremental filter now works on the
   **Ephemeral**, **Groups**, and **Health** tabs (was Persistent-only).
 - `CONTRIBUTING.md` documenting the branch policy (squash-merge to `stable`),
   SemVer, the release flow, and the changelog requirement.
@@ -47,24 +47,24 @@ and hosts keep working untouched).
   detail line.
 
 ### Fixed
-- Strip a UTF-8 **BOM** from the agent's `.runner` file before parsing its id —
+- Strip a UTF-8 **BOM** from the agent's `.runner` file before parsing its id -
   some agents write one, which previously broke id-based deregistration.
 - `srm runners create` **self-bootstraps its base directories** (the shared
   `installRoot/.cache`, plus the download and JIT control-file parents), so a
   create succeeds on a clean host or immediately after a full uninstall.
 
 ### Security
-- **Host-bound deregistration** — destroying/uninstalling a persistent runner now
+- **Host-bound deregistration** - destroying/uninstalling a persistent runner now
   deregisters it on GitHub by the agent's **host-local id** (from `.runner`), never
   by name. A name match could deregister a same-named runner owned by **another
   host** in a shared org; id matching makes the GitHub delete strictly host-owned.
-- **CI supply-chain hardening** — GitHub Actions are pinned to commit SHAs (not
+- **CI supply-chain hardening** - GitHub Actions are pinned to commit SHAs (not
   mutable tags), `checkout` runs with `persist-credentials: false`, a
   `govulncheck` gate fails the build on any reachable known vulnerability, and
   weekly Dependabot keeps pins/modules current. The `actions/setup-go` v6 bump
   also pulls in a `form-data` CVE fix.
 
-## [1.0.0] — 2026-06-19
+## [1.0.0] - 2026-06-19
 
 First stable release. `srm` is an interactive **fleet administrator** (TUI + CLI)
 for GitHub Actions self-hosted runners across one or more organizations on
@@ -78,7 +78,7 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 4 persistent + 20 ephemeral slots running under one aggregate memory ceiling.
 
 ### Authentication & configuration
-- **GitHub App installation auth only** — per-org `*http.Client` minted from the
+- **GitHub App installation auth only** - per-org `*http.Client` minted from the
   App installation token (`internal/auth`); no PATs. See
   [docs/GITHUB_APP_SETUP.md](docs/GITHUB_APP_SETUP.md).
 - **Multi-org** config (koanf/YAML); every operation names its org (`--org`, or
@@ -93,15 +93,15 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
   host toolchain probe), `srm version` / `--version`.
 
 ### Persistent runners
-- `srm runners create` — download + **sha256-verify** + extract the actions
+- `srm runners create` - download + **sha256-verify** + extract the actions
   agent, configure as a dedicated non-root user, install + start a hardened
   systemd unit (`actions.runner.<org>.<name>.service`), ensuring the runner group.
-- `srm runners destroy <name>` — host teardown (stop/uninstall/remove tree) +
+- `srm runners destroy <name>` - host teardown (stop/uninstall/remove tree) +
   GitHub deregister. Org-aware: resolves a name to its owning org and refuses
   ambiguous cross-org names.
 - `srm runners list` (cross-org, ORG/MACHINE columns), `srm runners delete <id…>`
   (bounded-concurrency, org-aware), `srm groups list/create`.
-- `srm runners refresh [--org]` — re-applies the systemd drop-in (hardening +
+- `srm runners refresh [--org]` - re-applies the systemd drop-in (hardening +
   tool-cache env + caps + isolation `User=`) and restarts idle runners in place
   (busy runners skipped). Also the in-place per-org isolation migration path.
 - Per-runner trees are **org-namespaced** (`{installRoot}/{org}/{name}`).
@@ -110,7 +110,7 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - A fixed **slot lane** model: `srm runners create --ephemeral --count N` stands
   up N numbered systemd lanes (`actions.ephemeral.<org>.<slot>.service`,
   `Restart=always`). Each lane mints a **fresh single-use JIT registration per
-  job** (`GenerateOrgJITConfig`), runs exactly one job, then auto-deregisters —
+  job** (`GenerateOrgJITConfig`), runs exactly one job, then auto-deregisters -
   zero credentials at rest between jobs, drift-free churn, clean `_work` per job.
 - **Privilege split**: the lane starts as **root** to mint from the App key
   (`/etc/srm/<org>.pem`, root-only), records the runner id (fsync) for crash
@@ -122,11 +122,11 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
   untrusted job code cannot forge a deregister id or poison mint params.
 - `srm runners destroy --ephemeral --slot N` (drains + deregisters + removes).
 - `srm reconcile --reap-ephemeral` deregisters offline, non-busy JIT ghosts left
-  by a crashed cycle — the one gated exception to "reconcile never deletes on
+  by a crashed cycle - the one gated exception to "reconcile never deletes on
   GitHub", guarded so it can never kill a live or another host's runner.
 - See [docs/EPHEMERAL.md](docs/EPHEMERAL.md). Note: JIT registrations carry
   **exactly** the labels you pass (`--labels`); GitHub does not auto-add
-  `self-hosted`/`Linux`/`X64` as it does for `config.sh` runners — pass the full
+  `self-hosted`/`Linux`/`X64` as it does for `config.sh` runners - pass the full
   set to match `runs-on: [self-hosted, …]`.
 
 ### Dynamic capacity policy (OOM protection)
@@ -134,7 +134,7 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
   systemd evaluates against live RAM, so they auto-scale on host resize with no
   reconfiguration: per-runner `MemoryHigh=20%`, `MemoryMax=25%`, `MemorySwapMax=0`.
 - An aggregate **`srm.slice`** holds every runner under one ceiling
-  (`sliceMemoryMax`, default `75%`) — the lever that stops many moderate jobs from
+  (`sliceMemoryMax`, default `75%`) - the lever that stops many moderate jobs from
   collectively OOM'ing the host (a per-runner cap can't). `MemorySwapMax=0`
   prevents swap-thrash that once wedged sshd.
 - Manual mode (`resources:` with literal values, no `resourceMode`) and the
@@ -154,11 +154,11 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
   prebuilt Node needs), `--corepack`, `--seed`/`--seed-node` (pre-bake tool-cache
   versions), `setupScripts`, plus the config `host:` manifest. Runners point at a
   shared/per-org tool cache via `AGENT_TOOLSDIRECTORY`.
-- `srm cache prune` — atime-based eviction of host build-tool dep caches
+- `srm cache prune` - atime-based eviction of host build-tool dep caches
   (per-org under isolation).
 
 ### Reconcile & observability
-- `srm reconcile [--fix] [--org]` — audits host vs GitHub and classifies each
+- `srm reconcile [--fix] [--org]` - audits host vs GitHub and classifies each
   runner (healthy / stale-dropin / stuck / orphan-unit / legacy-flat /
   orphan-github / unknown); ephemeral lanes are a separate family judged by host
   health alone. `--fix` repairs **host-side** drift only (refresh stale, restart
@@ -175,7 +175,7 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Bubble Tea v2 cockpit with five clearly-separated tabs: **Persistent**,
   **Ephemeral**, **Groups**, **Health**, **Settings**. Persistent and Ephemeral
   are deliberately distinct (different columns, create/destroy flows, and
-  addressing — runner name vs slot id); cross-nature actions are impossible.
+  addressing - runner name vs slot id); cross-nature actions are impossible.
 - `n` create wizard (huh) with a live progress bar; `d` destroy/deregister behind
   a confirm modal; `/` incremental filter (Persistent); `o` org filter; `r`
   refresh; `e` edit the capacity policy (Settings → writes `config.yaml`); `?`
@@ -193,7 +193,7 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 ### Known limitations
 - **Ubuntu x64 only** (systemd + apt + cgroup v2 assumed).
 - Not an autoscaler; `Restart=always` keeps ephemeral lanes warm (no
-  scale-to-zero — that needs a webhook, out of scope).
+  scale-to-zero - that needs a webhook, out of scope).
 - Ephemeral does not lower idle RAM (an idle JIT lane ≈ a persistent listener);
   the OOM levers are the caps + slice + trimming concurrency.
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a

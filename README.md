@@ -1,10 +1,10 @@
-# srm — self-hosted runner manager
+# srm - self-hosted runner manager
 
 A Bubble Tea TUI + CLI for managing **GitHub Actions self-hosted runners** across
 one or more organizations, on dedicated **Ubuntu x64** hosts.
 
 > **Scope:** `srm` is an *interactive fleet administrator* for a single host or a
-> small fleet — listing/creating/deleting runners, managing groups and labels,
+> small fleet - listing/creating/deleting runners, managing groups and labels,
 > minting registration/JIT tokens, and provisioning the host dependency layer.
 > It is **not an autoscaler.** For elastic scaling defer to
 > [Actions Runner Controller (ARC) / Runner Scale Sets](https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller),
@@ -14,12 +14,12 @@ one or more organizations, on dedicated **Ubuntu x64** hosts.
 
 | Decision         | Choice                                                                                                                      |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Hosts            | Dedicated **Ubuntu 24.04–26.x, x64 only** (systemd + apt)                                                                  |
-| Auth             | **GitHub App installation token only** — see [docs/GITHUB_APP_SETUP.md](docs/GITHUB_APP_SETUP.md)                          |
+| Hosts            | Dedicated **Ubuntu 24.04-26.x, x64 only** (systemd + apt)                                                                  |
+| Auth             | **GitHub App installation token only** - see [docs/GITHUB_APP_SETUP.md](docs/GITHUB_APP_SETUP.md)                          |
 | Runner lifecycle | **Ephemeral / JIT** by default, systemd-supervised warm loop                                                               |
-| Dependency model | **Host-baked** — provision the host once; ephemeral runners consume it. `setupScripts` + bring-your-own-host escape hatches |
+| Dependency model | **Host-baked** - provision the host once; ephemeral runners consume it. `setupScripts` + bring-your-own-host escape hatches |
 | Containers       | Per-job container is an **opt-in per profile** (default: jobs use the host toolchain)                                      |
-| Multi-org        | First-class — many orgs in one config; every operation names its org (`--org`, or implicitly when one is configured); TUI cycles the view with `o` |
+| Multi-org        | First-class - many orgs in one config; every operation names its org (`--org`, or implicitly when one is configured); TUI cycles the view with `o` |
 
 ## Architecture
 
@@ -38,40 +38,40 @@ with rate-limit-aware backoff (there is no bulk-delete API).
 | -------------------- | ------------------------------------------------------------------------------ |
 | `internal/core`      | Pure domain types (leaf, no internal imports)                                  |
 | `internal/config`    | Multi-org YAML config (koanf)                                                  |
-| `internal/secrets`   | Pluggable secret store — age-encrypted file (headless default) / env           |
+| `internal/secrets`   | Pluggable secret store - age-encrypted file (headless default) / env           |
 | `internal/auth`      | Per-org `*http.Client` from the GitHub App installation token                  |
 | `internal/github`    | go-github v88 adapter (runners, groups, tokens, JIT, downloads, retention)     |
 | `internal/service`   | Orchestration: list/delete, bulk engine, policy guardrails, lifecycle          |
 | `internal/provision` | Host-once dependency manifest apply + drift (apt · setup scripts · cache paths) |
 | `internal/runner`    | On-machine agent: download/verify/extract, systemd units + drop-ins, cgroup caps/`srm.slice`, per-org isolation, ephemeral JIT supervise + cycle |
-| `internal/tui`       | Bubble Tea v2 UI — five-tab cockpit (Persistent/Ephemeral/Groups/Health/Settings), spinner, help, confirm modal, huh create wizard |
+| `internal/tui`       | Bubble Tea v2 UI - five-tab cockpit (Persistent/Ephemeral/Groups/Health/Settings), spinner, help, confirm modal, huh create wizard |
 | `internal/cli`       | cobra commands (bare = TUI; `init`, `runners`, `groups`, `provision`, `doctor`, `cache`, `reconcile`, `version`) |
 
-## Status — v1.0.0 (stable)
+## Status - v1.0.0 (stable)
 
 Everything below is implemented and validated on a live two-org,
 single-host deployment:
 
-- **Auth & config** — GitHub App installation auth, age-encrypted secrets,
+- **Auth & config** - GitHub App installation auth, age-encrypted secrets,
   multi-org config, `srm init` / `srm doctor` / `srm version`.
-- **Persistent runners** — `runners create` (download + sha256-verify + extract,
+- **Persistent runners** - `runners create` (download + sha256-verify + extract,
   configure as a dedicated user, hardened systemd unit, ensure group),
   `runners destroy` (host teardown + deregister), org-aware `list`/`delete`,
   `runners refresh` (in-place drop-in / isolation migration).
-- **Ephemeral (JIT) runners** — `runners create --ephemeral --count N` slot lanes
+- **Ephemeral (JIT) runners** - `runners create --ephemeral --count N` slot lanes
   that mint a fresh single-use registration per job (root mints → setpriv drop →
   one job → auto-deregister), `runners destroy --ephemeral --slot N`,
   `reconcile --reap-ephemeral`. See [docs/EPHEMERAL.md](docs/EPHEMERAL.md).
-- **Dynamic capacity** — `resourceMode: auto` machine-relative cgroup caps plus an
+- **Dynamic capacity** - `resourceMode: auto` machine-relative cgroup caps plus an
   aggregate `srm.slice` ceiling, auto-scaling with host RAM (no reconfig on resize).
-- **Per-org isolation** — `isolation.perOrgUsers`: each org as its own service
+- **Per-org isolation** - `isolation.perOrgUsers`: each org as its own service
   user with a private HOME + caches; no shared unix group.
-- **Provisioning** — `srm provision` (apt / Node / corepack / seed) + `cache prune`.
-- **Reconcile & observability** — host-vs-GitHub drift audit + `--fix`, plus
+- **Provisioning** - `srm provision` (apt / Node / corepack / seed) + `cache prune`.
+- **Reconcile & observability** - host-vs-GitHub drift audit + `--fix`, plus
   per-runner cgroup OOM-kill attribution, live + aggregate slice memory, OOM events.
-- **TUI** — five-tab cockpit (Persistent / Ephemeral / Groups / Health / Settings)
+- **TUI** - five-tab cockpit (Persistent / Ephemeral / Groups / Health / Settings)
   with a create wizard, filter, confirm modal, and a Settings capacity editor.
-- **Hardening** — non-root agents, per-unit systemd sandbox, opt-in `ProtectProc`
+- **Hardening** - non-root agents, per-unit systemd sandbox, opt-in `ProtectProc`
   on persistent units.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full inventory and
@@ -87,28 +87,28 @@ See [CHANGELOG.md](CHANGELOG.md) for the full inventory and
 make install            # builds dist/srm and installs to /usr/local/bin/srm
 # or just:
 make build-linux        # produces ./dist/srm to scp to the host
-# or install straight from source (note: reports version "dev" — not stamped):
+# or install straight from source (note: reports version "dev" - not stamped):
 go install github.com/erlete/srm/cmd/srm@latest
 ```
 
 There are two ways `srm` runs on a server:
 
-1. **Interactive administration** — SSH in and run `srm` (the TUI) or the
+1. **Interactive administration** - SSH in and run `srm` (the TUI) or the
    headless subcommands (`srm runners list`, `srm runners delete …`,
    `srm doctor`). This is the management plane; `srm` is **not** a daemon.
-2. **Supervised runners** — `srm runners create` installs one **systemd** unit
+2. **Supervised runners** - `srm runners create` installs one **systemd** unit
    per runner, running the agent as a non-root user with an srm hardening drop-in.
    Two shapes: **persistent** (`actions.runner.<org>.<name>.service`, registered
    once) and **ephemeral** (`actions.ephemeral.<org>.<slot>.service`, a warm lane
-   that mints a fresh JIT registration per job, runs it, and re-mints — see
+   that mints a fresh JIT registration per job, runs it, and re-mints - see
    [docs/EPHEMERAL.md](docs/EPHEMERAL.md)). systemd keeps them alive; `srm` is the
    controller/installer.
 
 For distribution across many servers, grab the prebuilt static binary from the
-[latest GitHub Release](https://github.com/erlete/srm/releases) — it is built and
+[latest GitHub Release](https://github.com/erlete/srm/releases) - it is built and
 attached automatically on every `v*` tag by
 [.github/workflows/release.yml](.github/workflows/release.yml)
-(`srm-<version>-ubuntu-x64` + `.sha256`) — and `curl` it onto each host, or
+(`srm-<version>-ubuntu-x64` + `.sha256`) - and `curl` it onto each host, or
 `go install github.com/erlete/srm/cmd/srm@latest`.
 
 ### Host layout (mainstream & secure)
@@ -122,8 +122,8 @@ srm-managed runners use FHS-standard locations and a locked-down service identit
 | `/etc/srm/config.yaml` | configuration | 0640 root |
 | `/etc/srm/<org>.pem` or `secrets.age` | App key | 0600 root |
 | `/opt/actions-runners/<org>/<name>/` | per-runner tree (org-namespaced) | 0750 `srm` |
-| user `srm` (system, nologin) | runs the agents — **never root** | — |
-| `actions.runner.<org>.<name>.service` | systemd unit + srm hardening drop-in (`ProtectHome`, `PrivateTmp`, `ProtectKernel*`, `ProtectControlGroups`, `LockPersonality`, …) | — |
+| user `srm` (system, nologin) | runs the agents - **never root** | - |
+| `actions.runner.<org>.<name>.service` | systemd unit + srm hardening drop-in (`ProtectHome`, `PrivateTmp`, `ProtectKernel*`, `ProtectControlGroups`, `LockPersonality`, …) | - |
 
 Per-runner trees are **org-namespaced** (`{installRoot}/{org}/{name}`) so several
 orgs can share one host without colliding. Each unit gets a hardening drop-in at
@@ -146,9 +146,9 @@ srm doctor      # verify auth + connectivity for all configured orgs (or --org)
 is **`/etc/srm/config.yaml`** (0640 root). Resolution precedence:
 
 1. `--config <path>` (explicit override)
-2. `/etc/srm/config.yaml` — used automatically if it exists, and the default
+2. `/etc/srm/config.yaml` - used automatically if it exists, and the default
    target when running as root (so `sudo srm init` seeds `/etc/srm`)
-3. `~/.config/srm/config.yaml` — per-user fallback for non-root invocations
+3. `~/.config/srm/config.yaml` - per-user fallback for non-root invocations
 
 The age secrets file (`secrets.age`) lives next to whichever config is active.
 To edit by hand instead of `srm init`, see
@@ -157,10 +157,10 @@ To edit by hand instead of `srm init`, see
 
 ### Auth (GitHub App only)
 
-`srm` authenticates as a GitHub App installation. The full walkthrough — creating
+`srm` authenticates as a GitHub App installation. The full walkthrough - creating
 the App, the exact permissions (**Organization → Self-hosted runners: Read &
 write**, plus optional **Administration** for the retention panel), installing it
-per org, and finding the App ID / installation ID — is in
+per org, and finding the App ID / installation ID - is in
 [docs/GITHUB_APP_SETUP.md](docs/GITHUB_APP_SETUP.md).
 
 ### Secrets
@@ -192,7 +192,7 @@ sudo srm runners create --org acme \
      --count 2 --name-prefix srm-ci --labels srm-ci --group srm-ci   # persistent
 sudo srm runners destroy srm-ci-2 --org acme
 
-# Ephemeral (JIT) slot lanes — mint a fresh single-use registration per job.
+# Ephemeral (JIT) slot lanes - mint a fresh single-use registration per job.
 # JIT runners carry EXACTLY --labels (GitHub does NOT auto-add self-hosted/Linux/X64),
 # so pass the full set to match `runs-on: [self-hosted, temporal]`:
 sudo srm runners create --ephemeral --count 10 --org acme \
@@ -208,12 +208,12 @@ sudo srm reconcile --reap-ephemeral --org acme   # deregister offline JIT ghosts
 `srm reconcile` is the deep host/fleet check: it classifies each runner
 (healthy / stale drop-in / stuck / orphan unit / legacy layout / GitHub-only),
 reports host disk + cache sizes and per-runner memory vs cap, and with `--fix`
-repairs **host-side** drift (refresh stale, restart stuck, remove orphan units) —
+repairs **host-side** drift (refresh stale, restart stuck, remove orphan units) -
 busy runners are skipped and GitHub-side entries are never deleted.
 
 ### Host provisioning (the job toolchain)
 
-Self-hosted runners ship **bare** — no Node, Python, build tools — so a job that
+Self-hosted runners ship **bare** - no Node, Python, build tools - so a job that
 "just works" on `ubuntu-latest` fails with exit 127 until the host is
 provisioned. `srm provision` applies a host-once dependency layer:
 
@@ -231,7 +231,7 @@ toolchain and any manifest drift.
 **Per-project language versions.** The system Node is the default/bootstrap;
 each workflow still picks its version with `actions/setup-node` (etc.). srm
 points every runner at a **shared host tool cache** (`AGENT_TOOLSDIRECTORY` →
-`/opt/hostedtoolcache`), so a version one runner downloads is reused by all —
+`/opt/hostedtoolcache`), so a version one runner downloads is reused by all -
 and `srm provision --seed-node <versions>` (or `host.toolCacheSeeds`) pre-bakes
 exact versions so the first use is instant and offline.
 
@@ -239,24 +239,24 @@ exact versions so the first use is instant and offline.
 
 A tabbed, multi-org cockpit. Persistent and ephemeral runners have fully
 different natures, so they live in **separate, never-mistakable tabs** (distinct
-columns, create/destroy flows, and addressing — runner **name** vs **slot id**):
+columns, create/destroy flows, and addressing - runner **name** vs **slot id**):
 
 - **Tabs** (`tab`/`shift+tab`): **Persistent** (cross-org runner table with
   ORG/MACHINE columns + a color-coded detail line), **Ephemeral** (host-local
-  slot lanes judged by host health — state / restarts / conformance / memory +
+  slot lanes judged by host health - state / restarts / conformance / memory +
   an OOM badge), **Groups**, **Health** (per-org auth + retention cards), and
   **Settings** (the capacity policy).
 - `o` cycles the org filter; `r` refresh; `/` incremental **filter** (Persistent);
   `n` opens the **create wizard** (persistent runners *or* ephemeral slots) with a
-  live progress bar; `d` destroys the selection (a persistent runner — host
-  teardown if local, else deregister — or an ephemeral slot by id) behind a
+  live progress bar; `d` destroys the selection (a persistent runner - host
+  teardown if local, else deregister - or an ephemeral slot by id) behind a
   confirm modal; on **Settings**, `e` opens the **capacity editor** (mode,
   per-runner caps, slice ceiling → writes `config.yaml`, validated).
 - `?` toggles full help; `↑/↓` move; `q` quits.
 
 ## License
 
-Licensed under the **Apache License, Version 2.0** — see [LICENSE](LICENSE) and
+Licensed under the **Apache License, Version 2.0** - see [LICENSE](LICENSE) and
 [NOTICE](NOTICE). You may use, modify, and redistribute this software, including
 commercially, provided you retain the copyright/license notices and the contents
 of `NOTICE`.

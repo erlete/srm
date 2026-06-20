@@ -13,7 +13,7 @@ import (
 
 // ephemeralView is the ephemeral slot inventory: a host-local table of slot lanes
 // (ORG/SLOT columns) judged by HOST health alone. It is a deliberately SEPARATE
-// panel from the persistent runners view — the two natures must never be mistaken:
+// panel from the persistent runners view - the two natures must never be mistaken:
 // here you scale slots and drain by slot id, never address a runner by name.
 type ephemeralView struct {
 	tbl   table.Model
@@ -127,7 +127,7 @@ func (v ephemeralView) detail() string {
 		if v.flt.shown() {
 			return v.theme.Help.Render("no slots match")
 		}
-		return v.theme.Help.Render("no ephemeral slots on this host — press n to add some")
+		return v.theme.Help.Render("no ephemeral slots on this host - press n to add some")
 	}
 	s, ok := v.selected()
 	if !ok {
@@ -140,12 +140,12 @@ func (v ephemeralView) detail() string {
 		v.theme.Faint.Render(fmt.Sprintf("%d restarts", s.Restarts)),
 	}
 	if !s.UnitOK {
-		parts = append(parts, v.theme.Busy.Render("unit drift — recreate to apply"))
+		parts = append(parts, v.theme.Busy.Render("unit drift - recreate to apply"))
 	}
 	if s.OOMKills > 0 {
 		parts = append(parts, v.theme.Offline.Render(fmt.Sprintf("⚠ %d OOM-kill(s)", s.OOMKills)))
 	}
-	if m := memPair(s.MemPeak, s.MemMax); m != "—" {
+	if m := memPair(s.MemPeak, s.MemMax); m != "-" {
 		parts = append(parts, v.theme.Faint.Render("mem "+m))
 	}
 	return strings.Join(parts, v.theme.Faint.Render(" · "))
@@ -209,20 +209,20 @@ func (v ephemeralView) counts() string {
 	)
 }
 
-// memPair formats "peak/max" cgroup memory, using "—" for unknown/unlimited sides.
+// memPair formats "peak/max" cgroup memory, using "-" for unknown/unlimited sides.
 func memPair(peak, max int64) string {
 	p, m := humanBytes(peak), humanBytes(max)
-	if p == "—" && m == "—" {
-		return "—"
+	if p == "-" && m == "-" {
+		return "-"
 	}
 	return p + "/" + m
 }
 
 // humanBytes renders a byte count as a compact human string; -1 (unknown/
-// unlimited) becomes "—".
+// unlimited) becomes "-".
 func humanBytes(n int64) string {
 	if n < 0 {
-		return "—"
+		return "-"
 	}
 	const unit = 1024
 	if n < unit {

@@ -69,7 +69,7 @@ func newVersionCmd(version string) *cobra.Command {
 const systemConfigPath = "/etc/srm/config.yaml"
 
 func defaultConfigPath() string {
-	// The system path wins whenever it already exists — that's the standard
+	// The system path wins whenever it already exists - that's the standard
 	// location srm deploys to, so bare `srm` on a managed host finds it.
 	if _, err := os.Stat(systemConfigPath); err == nil {
 		return systemConfigPath
@@ -143,20 +143,20 @@ func targetOrg(mgr *service.Manager) (string, error) {
 	if len(names) == 1 {
 		return names[0], nil
 	}
-	return "", fmt.Errorf("multiple orgs configured (%s) — specify --org", strings.Join(names, ", "))
+	return "", fmt.Errorf("multiple orgs configured (%s) - specify --org", strings.Join(names, ", "))
 }
 
 // noOrgsError crafts the right guidance when no orgs resolved. On a managed host
 // the config + App key live root-only under /etc/srm, so a non-root invocation
-// can't read them — point the user at sudo rather than the irrelevant per-user
+// can't read them - point the user at sudo rather than the irrelevant per-user
 // path. (Geteuid is -1 on Windows, so this only triggers on the real hosts.)
 func noOrgsError() error {
 	if os.Geteuid() != 0 {
 		if _, err := os.Stat(systemConfigPath); err == nil || errors.Is(err, fs.ErrPermission) {
-			return fmt.Errorf("the system config %s is root-only (srm is sudo-operated) — re-run with sudo, e.g. `sudo srm runners list`", systemConfigPath)
+			return fmt.Errorf("the system config %s is root-only (srm is sudo-operated) - re-run with sudo, e.g. `sudo srm runners list`", systemConfigPath)
 		}
 	}
-	return fmt.Errorf("no orgs configured — create %s (see config.example.yaml)", flagConfig)
+	return fmt.Errorf("no orgs configured - create %s (see config.example.yaml)", flagConfig)
 }
 
 // resolveSecrets prefers an age-encrypted file when SRM_SECRETS_PASSPHRASE is
@@ -216,7 +216,7 @@ func ensureConfigured() error {
 }
 
 // firstRunEligible reports whether a no-orgs situation is a genuine fresh install
-// we can guide and write — as opposed to a root-only system config we merely can't
+// we can guide and write - as opposed to a root-only system config we merely can't
 // read as a non-root user, where the right answer is "re-run with sudo". It is the
 // inverse of noOrgsError's sudo-hint condition.
 func firstRunEligible() bool {
@@ -229,7 +229,7 @@ func firstRunEligible() bool {
 }
 
 // validateOrgAuth confirms an org's GitHub App credentials actually authenticate
-// by listing its runners through a freshly built manager — so it reads the config
+// by listing its runners through a freshly built manager - so it reads the config
 // just written to disk. A nil error means auth is good (0 runners still counts).
 func validateOrgAuth(org string) error {
 	mgr, closeLog, err := buildManager()

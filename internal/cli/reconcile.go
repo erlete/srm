@@ -85,7 +85,7 @@ func renderReconcile(rep service.ReconcileReport) error {
 	if len(drift) > 0 {
 		fmt.Println("\nDRIFT")
 		for _, r := range drift {
-			line := fmt.Sprintf("  %-14s %s/%s — %s", r.Class, r.Org, r.Name, r.Detail)
+			line := fmt.Sprintf("  %-14s %s/%s - %s", r.Class, r.Org, r.Name, r.Detail)
 			if r.Fix != "" {
 				line += "  [" + r.Fix + "]"
 			}
@@ -105,7 +105,7 @@ func renderReconcile(rep service.ReconcileReport) error {
 	for _, c := range rep.Caches {
 		fmt.Printf("  %-34s %s\n", c.Label, humanBytes(c.Bytes))
 	}
-	// Aggregate slice headroom: the box-wide ceiling for all runners combined — the
+	// Aggregate slice headroom: the box-wide ceiling for all runners combined - the
 	// single best early-warning number for host OOM (shown only in auto-cap mode).
 	if rep.SliceMax > 0 {
 		// "now" disambiguates this LIVE figure from the per-runner MEMORY (peak / cap)
@@ -151,7 +151,7 @@ func renderReconcile(rep service.ReconcileReport) error {
 
 	// OOM events: the direct per-runner kill counter (cgroup memory.events
 	// oom_kill). A nonzero count is the smoking gun behind a cap that's too low or
-	// too many concurrent jobs — the answer to the "box OOM'd" question.
+	// too many concurrent jobs - the answer to the "box OOM'd" question.
 	var oomed []service.RunnerState
 	for _, r := range rep.Runners {
 		if r.OOMKills > 0 {
@@ -160,7 +160,7 @@ func renderReconcile(rep service.ReconcileReport) error {
 	}
 	if len(oomed) > 0 {
 		sort.Slice(oomed, func(i, j int) bool { return oomed[i].OOMKills > oomed[j].OOMKills })
-		fmt.Println("\nOOM EVENTS (cgroup kills since unit start — raise the cap or cut concurrency)")
+		fmt.Println("\nOOM EVENTS (cgroup kills since unit start - raise the cap or cut concurrency)")
 		for _, r := range oomed {
 			fmt.Printf("  %-30s %d OOM-kill(s)\n", r.Org+"/"+r.Name, r.OOMKills)
 		}
@@ -170,7 +170,7 @@ func renderReconcile(rep service.ReconcileReport) error {
 	if len(rep.Reaped) > 0 {
 		fmt.Printf("\nREAPED EPHEMERAL GHOSTS (%d)\n", len(rep.Reaped))
 		for _, r := range rep.Reaped {
-			line := fmt.Sprintf("  %s/%s — %s", r.Org, r.Name, r.Fix)
+			line := fmt.Sprintf("  %s/%s - %s", r.Org, r.Name, r.Fix)
 			if r.FixErr != nil {
 				line += fmt.Sprintf("  FAILED: %v", r.FixErr)
 			}

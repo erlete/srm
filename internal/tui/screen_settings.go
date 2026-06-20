@@ -93,16 +93,16 @@ func (v settingsView) modeLabel() string {
 	t := v.theme
 	switch {
 	case v.snap.Mode == config.ResourceModeAuto:
-		return t.Online.Render("auto") + t.Crumb.Render(" — machine-relative %, scales with host RAM, no reconfig on resize")
+		return t.Online.Render("auto") + t.Crumb.Render(" - machine-relative %, scales with host RAM, no reconfig on resize")
 	case !v.snap.Effective.IsZero():
-		return t.StatusInfo.Render("manual") + t.Crumb.Render(" — literal caps below")
+		return t.StatusInfo.Render("manual") + t.Crumb.Render(" - literal caps below")
 	default:
-		return t.Offline.Render("off") + t.Crumb.Render(" — jobs are UNBOUNDED; switch to auto to OOM-proof")
+		return t.Offline.Render("off") + t.Crumb.Render(" - jobs are UNBOUNDED; switch to auto to OOM-proof")
 	}
 }
 
 // settingsForm is the huh form that edits the capacity policy. It is a deliberately
-// separate concern from the runner-create forms — it writes config, never runners.
+// separate concern from the runner-create forms - it writes config, never runners.
 type settingsForm struct {
 	form     *huh.Form
 	mode     string
@@ -128,16 +128,16 @@ func newSettingsForm(cur service.ResourceSettings) *settingsForm {
 	sf.form = huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().Title("Capacity mode").Options(
-				huh.NewOption("Auto — machine-relative %, scales with host RAM", config.ResourceModeAuto),
-				huh.NewOption("Manual / off — literal values (empty field = unbounded)", ""),
+				huh.NewOption("Auto - machine-relative %, scales with host RAM", config.ResourceModeAuto),
+				huh.NewOption("Manual / off - literal values (empty field = unbounded)", ""),
 			).Value(&sf.mode),
 			huh.NewNote().Description("Empty field = pre-packaged auto default (shown as placeholder) in Auto mode, or unbounded in Manual mode."),
 			huh.NewInput().Title("Per-runner MemoryHigh (soft cap)").Placeholder(auto.MemoryHigh).Value(&sf.memHigh).Validate(systemdMemValue),
 			huh.NewInput().Title("Per-runner MemoryMax (hard cap)").Placeholder(auto.MemoryMax).Value(&sf.memMax).Validate(systemdMemValue),
 			huh.NewInput().Title("Per-runner MemorySwapMax (0 = no swap)").Placeholder(auto.MemorySwapMax).Value(&sf.memSwap).Validate(systemdMemValue),
 			huh.NewInput().Title("Aggregate srm.slice MemoryMax (all runners; Auto mode)").Placeholder(config.AutoSliceMemoryMax).Value(&sf.sliceMax).Validate(systemdMemValue),
-			huh.NewInput().Title("CPUWeight — optional (1..10000)").Value(&sf.cpu).Validate(optInt),
-			huh.NewInput().Title("TasksMax — optional").Value(&sf.tasks).Validate(optInt),
+			huh.NewInput().Title("CPUWeight - optional (1..10000)").Value(&sf.cpu).Validate(optInt),
+			huh.NewInput().Title("TasksMax - optional").Value(&sf.tasks).Validate(optInt),
 		),
 	).WithWidth(66)
 	return sf
@@ -160,7 +160,7 @@ func (sf *settingsForm) settings() service.ResourceSettings {
 
 // systemdMemValue permissively validates a systemd memory directive: empty,
 // "infinity", a percentage ("25%"), or a size/byte value starting with a digit
-// ("2G", "0", "1073741824"). systemd is the final arbiter — this only catches typos.
+// ("2G", "0", "1073741824"). systemd is the final arbiter - this only catches typos.
 func systemdMemValue(s string) error {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "infinity" {

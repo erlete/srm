@@ -13,7 +13,7 @@ import (
 
 // loadRunnersCmd fetches PERSISTENT runners off the event loop. orgFilter == ""
 // means all configured orgs (with host-locality); otherwise a single org. Ephemeral
-// JIT registrations are excluded — they churn every job and belong to the Ephemeral
+// JIT registrations are excluded - they churn every job and belong to the Ephemeral
 // panel, so the two natures are never shown together.
 func loadRunnersCmd(ctx context.Context, mgr *service.Manager, orgFilter string) tea.Cmd {
 	return func() tea.Msg {

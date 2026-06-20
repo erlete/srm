@@ -13,7 +13,7 @@ import (
 )
 
 // A pre-versioning (no schemaVersion) config must load and be adopted as the
-// current schema generation — existing v1.0/v1.1 configs keep working untouched.
+// current schema generation - existing v1.0/v1.1 configs keep working untouched.
 func TestSchemaVersionStampsLegacy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("orgs:\n  - name: acme\n"), 0o600); err != nil {
@@ -28,7 +28,7 @@ func TestSchemaVersionStampsLegacy(t *testing.T) {
 	}
 }
 
-// A config written by a NEWER srm must be refused, not loaded — koanf would
+// A config written by a NEWER srm must be refused, not loaded - koanf would
 // otherwise silently drop the keys this binary doesn't know.
 func TestSchemaVersionRejectsNewer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -177,7 +177,7 @@ func TestResourcesFor(t *testing.T) {
 	}
 }
 
-// TestLoadResourcesYAML verifies a hand-written resources block loads via koanf —
+// TestLoadResourcesYAML verifies a hand-written resources block loads via koanf -
 // in particular that quoted numeric directives ("0", "4096") land in the string
 // fields (the documented format), and per-org overrides parse.
 func TestLoadResourcesYAML(t *testing.T) {
@@ -212,7 +212,7 @@ orgs:
 // TestResourcesForAuto verifies "auto" mode: the machine-relative percentage
 // defaults fill unset fields, an explicit host field overrides one auto value,
 // a per-org field overrides host+auto, and auto never yields IsZero (the fleet is
-// always bounded). Off mode (ResourceMode == "") is unaffected — see TestResourcesFor.
+// always bounded). Off mode (ResourceMode == "") is unaffected - see TestResourcesFor.
 func TestResourcesForAuto(t *testing.T) {
 	cfg := &Config{
 		ResourceMode: ResourceModeAuto,
@@ -284,7 +284,7 @@ func TestLoadResourceModeAuto(t *testing.T) {
 }
 
 // TestResourceModeValidation ensures a typo'd/case-variant resourceMode is
-// rejected at load — a silent fallthrough would leave the fleet UNBOUNDED while
+// rejected at load - a silent fallthrough would leave the fleet UNBOUNDED while
 // the operator believes it is capped.
 func TestResourceModeValidation(t *testing.T) {
 	load := func(yml string) error {
@@ -336,7 +336,7 @@ func TestHardeningConfig(t *testing.T) {
 	}
 }
 
-// TestSlug pins username normalization for the live org names — these feed the
+// TestSlug pins username normalization for the live org names - these feed the
 // per-org service username and must be valid lowercase Linux user names.
 func TestSlug(t *testing.T) {
 	for in, want := range map[string]string{
@@ -353,7 +353,7 @@ func TestSlug(t *testing.T) {
 
 // TestResolutionDefaultMode verifies that with isolation OFF (the default), the
 // per-org resolvers return the shared user verbatim and EMPTY cache roots, so the
-// orchestrator falls back to the historical shared paths — i.e. nothing changes.
+// orchestrator falls back to the historical shared paths - i.e. nothing changes.
 func TestResolutionDefaultMode(t *testing.T) {
 	cfg := &Config{RunnerUser: "srm", Orgs: []OrgConfig{{Name: "Acme"}, {Name: "Globex"}}}
 	for _, org := range []string{"Acme", "Globex"} {

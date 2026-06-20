@@ -13,13 +13,13 @@ group; a job is routed by **labels**, not by runner type.
 
 ## The allocation model (three layers)
 
-1. **Slot (lane)** — created once per slot: a systemd unit + a warm extracted agent
+1. **Slot (lane)** - created once per slot: a systemd unit + a warm extracted agent
    tree under `{installRoot}/<org>/.ephemeral/<slot>`. `srm runners create
    --ephemeral --count N` makes N numbered lanes (1..N).
-2. **JIT registration** — minted **fresh for every job** (`GenerateOrgJITConfig`),
+2. **JIT registration** - minted **fresh for every job** (`GenerateOrgJITConfig`),
    used once, then the runner auto-deregisters. A slot that runs 100 jobs mints 100
    throwaway registrations named `srm-eph-<org>-<slot>-<nonce>`.
-3. **Org** — shares the GitHub App key used to mint.
+3. **Org** - shares the GitHub App key used to mint.
 
 So the lane is stable; the identity flowing through it is disposable.
 
@@ -29,7 +29,7 @@ Each slot's unit runs `srm _runner-cycle --org X --slot N` as **root** on a loop
 (`Restart=always`). One cycle:
 
 1. Reap a ghost from a prior crashed cycle (`.jit-id`), if any.
-2. Mint a JIT config (reads the App key in `/etc/srm` — root only).
+2. Mint a JIT config (reads the App key in `/etc/srm` - root only).
 3. Record the runner id (`fsync`'d) **before** the job, so a crash leaves a
    reapable ghost.
 4. Reset the workspace (`_work`/`_diag`/`.runner`/`.credentials*`), keep the warm
@@ -38,10 +38,10 @@ Each slot's unit runs `srm _runner-cycle --org X --slot N` as **root** on a loop
    write a `.ran-as` attestation, then run `run.sh --jitconfig <blob>` for exactly
    one job.
 6. After the job, if the runner is still registered (it should auto-deregister),
-   reap it — reaping is by **registration state**, not run.sh's exit code (which is
+   reap it - reaping is by **registration state**, not run.sh's exit code (which is
    unreliable).
 
-The unit has **no `User=`** — it must start as root to mint, then drops privileges
+The unit has **no `User=`** - it must start as root to mint, then drops privileges
 inside the cycle. Hardening is stricter than the persistent drop-in:
 `NoNewPrivileges=true`, `ProtectProc=invisible`, `LimitCORE=0`.
 
@@ -75,13 +75,13 @@ srm reconcile --reap-ephemeral --org Acme
 Bare `srm` opens the cockpit. Because the two natures must never be confused, they
 live in **separate tabs**, each with its own columns and actions:
 
-- **Persistent** — the cross-org/cross-host runner inventory. `n` provisions named
+- **Persistent** - the cross-org/cross-host runner inventory. `n` provisions named
   runners, `d` destroys (local) or deregisters (remote) by name, `/` filters.
-  Ephemeral JIT registrations are excluded here — they belong to their own tab.
-- **Ephemeral** — the host-local slot lanes (ORG/SLOT/STATE/RESTARTS/CONFORM/MEM),
+  Ephemeral JIT registrations are excluded here - they belong to their own tab.
+- **Ephemeral** - the host-local slot lanes (ORG/SLOT/STATE/RESTARTS/CONFORM/MEM),
   judged by host health alone. `n` adds slots (scale up), `d` drains + destroys a
   slot by id. Never addressed by runner name.
-- **Settings** — the capacity policy (Rule 2: tune caps from the TUI, not env).
+- **Settings** - the capacity policy (Rule 2: tune caps from the TUI, not env).
   `e` opens the editor: mode (auto/manual), per-runner caps, and the aggregate
   `srm.slice` ceiling. Saving writes `config.yaml` (validated, so a saved config is
   never one srm would refuse to load). Changes apply to **new** runners; run
@@ -91,7 +91,7 @@ live in **separate tabs**, each with its own columns and actions:
 
 Ephemeral slots inherit the same cgroup caps as persistent runners. With
 `resourceMode: auto`, each runner is capped by machine-relative percentages and all
-runners share an `srm.slice` aggregate ceiling that **auto-scales with the host** —
+runners share an `srm.slice` aggregate ceiling that **auto-scales with the host** -
 see `config.example.yaml`. `MemorySwapMax=0` keeps a hungry job from swap-thrashing
 the host. The slice ceiling defaults to 75% of RAM and is tunable via
 `sliceMemoryMax` (or the TUI Settings panel).
@@ -100,11 +100,11 @@ the host. The slice ceiling defaults to 75% of RAM and is tunable via
 
 **Buys:** clean slate per job (fresh process + `PrivateTmp` + wiped `_work`, without
 re-downloading the agent or cold caches), zero credentials at rest between jobs,
-drift-free churn (no offline-but-registered zombies — they auto-deregister),
+drift-free churn (no offline-but-registered zombies - they auto-deregister),
 per-job + aggregate memory caps.
 
 **Does NOT:** lower idle RAM (an idle JIT slot holds the same listener as a
-persistent runner — the OOM lever is fewer concurrent jobs + the caps), deliver
+persistent runner - the OOM lever is fewer concurrent jobs + the caps), deliver
 scale-to-zero (`Restart=always` keeps the lane warm; demand-based autoscale needs a
 webhook and is out of scope), or remove per-job latency (a mint + reset + cold
 `run.sh` start adds a few seconds vs a parked persistent runner). The clean-slate

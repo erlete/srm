@@ -10,7 +10,7 @@ import (
 	"github.com/erlete/srm/internal/core"
 )
 
-// IsNotFound reports whether err is a GitHub 404 — e.g. a runner that has already
+// IsNotFound reports whether err is a GitHub 404 - e.g. a runner that has already
 // been deleted (or auto-deregistered after a JIT job). Lets callers treat a
 // double-delete as success and distinguish "gone" from a transient API error.
 func IsNotFound(err error) bool {

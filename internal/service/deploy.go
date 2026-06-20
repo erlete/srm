@@ -195,9 +195,9 @@ type RefreshResult struct {
 // This is also the per-org-isolation migration path: when isolation is enabled,
 // EnsureBase creates the org user + re-chowns its tree and RefreshUnit rewrites
 // the drop-in with User=<org user>, so the restart brings the runner up under the
-// new user IN PLACE — no recreate or re-registration. Returns one result per
+// new user IN PLACE - no recreate or re-registration. Returns one result per
 // local runner plus any per-org list errors.
-// orgFilter (when non-empty) restricts the refresh to a single org — used to
+// orgFilter (when non-empty) restricts the refresh to a single org - used to
 // stage the isolation migration one org at a time.
 func (m *Manager) RefreshLocalUnits(ctx context.Context, orgFilter string) ([]RefreshResult, map[string]error) {
 	all, errs := m.ListAllRunners(ctx)
@@ -294,7 +294,7 @@ func (m *Manager) DestroyRunner(ctx context.Context, org, name string) error {
 	hostErr := orch.RemoveRunner(ctx, name, org, "")
 
 	if id == 0 {
-		// No host-local id to deregister by — do NOT fall back to a name lookup
+		// No host-local id to deregister by - do NOT fall back to a name lookup
 		// (it could resolve to another host's runner). Leave the GitHub-side
 		// registration for `srm reconcile` to surface and clean as an orphan.
 		if hostErr != nil {

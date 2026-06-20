@@ -31,7 +31,7 @@ func newRunnersCreateCmd() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "create",
-		Short: "Provision self-hosted runners on THIS host — persistent, or --ephemeral JIT slots (run as root on the target)",
+		Short: "Provision self-hosted runners on THIS host - persistent, or --ephemeral JIT slots (run as root on the target)",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			mgr, closeLog, err := buildManager()
 			if err != nil {
@@ -47,7 +47,7 @@ func newRunnersCreateCmd() *cobra.Command {
 			}
 
 			// Ephemeral slots are numbered lanes (1..N) that mint a fresh JIT
-			// registration per job — no name prefix, distinct from persistent runners.
+			// registration per job - no name prefix, distinct from persistent runners.
 			if ephemeral {
 				if namePrefix != "" {
 					return fmt.Errorf("--name-prefix is not used with --ephemeral (slots are numbered 1..N)")
@@ -321,7 +321,7 @@ func newRunnersDestroyCmd() *cobra.Command {
 			ctx := context.Background()
 
 			// Ephemeral slots are lanes addressed by org + slot id, never by runner
-			// name — a deliberately separate path so the two natures can't be mixed up.
+			// name - a deliberately separate path so the two natures can't be mixed up.
 			if ephemeral {
 				if len(args) != 0 {
 					return fmt.Errorf("--ephemeral destroys a slot by --slot, not a runner name")
@@ -349,7 +349,7 @@ func newRunnersDestroyCmd() *cobra.Command {
 
 			// Resolve which org owns this runner name. Names are unique within an
 			// org but can collide across orgs (e.g. temporal-1 in two orgs), so
-			// destroy must never guess — require --org to disambiguate.
+			// destroy must never guess - require --org to disambiguate.
 			org := flagOrg
 			if org == "" {
 				orgs, errs := mgr.FindRunnerOrgsByName(ctx, name)
@@ -364,7 +364,7 @@ func newRunnersDestroyCmd() *cobra.Command {
 				case 1:
 					org = orgs[0]
 				default:
-					return fmt.Errorf("runner %q exists in multiple orgs (%s) — specify --org", name, strings.Join(orgs, ", "))
+					return fmt.Errorf("runner %q exists in multiple orgs (%s) - specify --org", name, strings.Join(orgs, ", "))
 				}
 			} else if _, ok := mgr.Config().Org(org); !ok {
 				return fmt.Errorf("org %q not configured", org)
