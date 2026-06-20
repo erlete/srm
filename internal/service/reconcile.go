@@ -21,7 +21,7 @@ const (
 	ClassOrphanGitHub = "orphan-github" // on GitHub, no managed unit here → report only
 	ClassUnknown      = "unknown"       // GitHub list failed for the org → cannot classify, no fix
 
-	// Ephemeral slot lanes are a SEPARATE family judged by host health alone — never
+	// Ephemeral slot lanes are a SEPARATE family judged by host health alone - never
 	// by GitHub registration presence, which churns every job. A healthy lane is
 	// normal (not drift); a down/crash-looping lane is reported.
 	ClassEphemeralSlot  = "ephemeral"       // active lane, not crash-looping → healthy
@@ -68,7 +68,7 @@ type ReconcileReport struct {
 
 	// SliceCurrent/SliceMax are the live usage and hard cap of the srm aggregate
 	// slice (cgroup v2), -1 when no auto-capacity slice exists. This is the box-wide
-	// ceiling for ALL runners combined — the early-warning number for host OOM.
+	// ceiling for ALL runners combined - the early-warning number for host OOM.
 	SliceCurrent int64
 	SliceMax     int64
 }
@@ -95,7 +95,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 		gh[key{row.Org, row.Runner.Name}] = row
 	}
 	// An org whose GitHub list FAILED is not in errs==nil; for such orgs we must
-	// NOT treat "absent from gh" as "deregistered" — that would mass-misclassify
+	// NOT treat "absent from gh" as "deregistered" - that would mass-misclassify
 	// healthy local units as orphan-unit and (with --fix) delete them. Track which
 	// orgs we can actually trust the GitHub view for.
 	listedOK := make(map[string]bool, len(m.cfg.OrgNames()))
@@ -139,7 +139,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 		}
 		switch {
 		case !on && !listedOK[org]:
-			st.Class, st.Detail = ClassUnknown, "GitHub list failed for this org — not classified (no fix)"
+			st.Class, st.Detail = ClassUnknown, "GitHub list failed for this org - not classified (no fix)"
 		case !on:
 			st.Class, st.Detail = ClassOrphanUnit, "host unit not registered on GitHub"
 		case insp.HasFlatTree && !insp.HasTree:
@@ -157,7 +157,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 	}
 
 	// Ephemeral slot lanes: a SEPARATE inventory, classified by HOST HEALTH ONLY.
-	// They are deliberately never joined to the GitHub runner list — a slot mints a
+	// They are deliberately never joined to the GitHub runner list - a slot mints a
 	// fresh single-use JIT registration each job, so a unit↔registration join is
 	// impossible and would mass-misclassify a between-jobs lane as an orphan.
 	eph, err := host.ListEphemeralUnits(ctx)
@@ -189,7 +189,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 	}
 
 	// GitHub runners with no managed unit here. Online ones are healthy on another
-	// host (skip — not this host's drift). Offline ones are reported as orphans.
+	// host (skip - not this host's drift). Offline ones are reported as orphans.
 	for _, row := range all {
 		if orgFilter != "" && row.Org != orgFilter {
 			continue
@@ -199,7 +199,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 			continue
 		}
 		// An ephemeral slot's JIT registration is owned by its lane unit, not a
-		// stray runner — never class it orphan-github. With --reap-ephemeral, an
+		// stray runner - never class it orphan-github. With --reap-ephemeral, an
 		// OFFLINE non-busy one is a ghost (a healthy slot's runner is online or
 		// busy, and a finished one auto-deregisters), so deregister it: the single
 		// gated exception to "reconcile never deletes on GitHub".
@@ -218,7 +218,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 			Online: online, Busy: row.Runner.Busy, Local: row.Local,
 			Class:  ClassOrphanGitHub,
 			Detail: "registered on GitHub, no managed unit on this host",
-			// No host inspection for these — keep the -1 "unknown" sentinel rather
+			// No host inspection for these - keep the -1 "unknown" sentinel rather
 			// than 0 ("measured zero"), consistent with the inspected builders.
 			MemPeak: -1, MemMax: -1, MemCur: -1, OOMKills: -1,
 		})
@@ -250,12 +250,12 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 // maybeReapGhost reaps an offline ephemeral registration ONLY if it is genuinely
 // abandoned: this host owns the slot lane, and the registration is not the lane's
 // current in-flight id. This excludes the mint→connect window (where a live runner
-// is briefly offline) and another host's registrations — a false positive here
+// is briefly offline) and another host's registrations - a false positive here
 // would kill an in-flight CI job, since this is the one gated GitHub-delete path.
 func (m *Manager) maybeReapGhost(ctx context.Context, rep *ReconcileReport, row RunnerWithOrg) {
 	slot, ok := runner.EphemeralSlotFromName(row.Runner.Name, row.Org)
 	if !ok {
-		return // malformed name — never touch
+		return // malformed name - never touch
 	}
 	orch := m.orchestratorFor(row.Org)
 	insp := orch.InspectEphemeral(ctx, row.Org, slot)
@@ -264,7 +264,7 @@ func (m *Manager) maybeReapGhost(ctx context.Context, rep *ReconcileReport, row 
 	}
 	// While the lane is actively running a cycle, don't reap its current/just-minted
 	// registration: skip the recorded in-flight id, and skip entirely mid-mint
-	// (PendingJIT not yet written) — we can't tell the live id from a ghost then.
+	// (PendingJIT not yet written) - we can't tell the live id from a ghost then.
 	if insp.Active {
 		if pending := orch.PendingJIT(row.Org, slot); pending == 0 || row.Runner.ID == pending {
 			return

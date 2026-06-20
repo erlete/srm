@@ -1,6 +1,6 @@
 // Package tui implements the Bubble Tea (v2) terminal UI: a tabbed, multi-org
-// cockpit over the service layer. Five views — Persistent runners, Ephemeral
-// slots, Groups, Health, and Settings — share a header (org filter), a spinner-
+// cockpit over the service layer. Five views - Persistent runners, Ephemeral
+// slots, Groups, Health, and Settings - share a header (org filter), a spinner-
 // driven status bar, an integrated help bubble, and a confirmation modal for
 // destructive actions. The Persistent and Ephemeral panels are deliberately
 // SEPARATE: the two runner natures must never be mistaken, so each has its own
@@ -76,7 +76,7 @@ type Model struct {
 	createTotal int
 	createMsg   string
 	createOrg   string
-	createNoun  string // "runner" or "ephemeral slot" — labels the create summary
+	createNoun  string // "runner" or "ephemeral slot" - labels the create summary
 }
 
 // New builds the root model.

@@ -74,7 +74,7 @@ func TestRenderPaths(t *testing.T) {
 		t.Fatal("nil view with wizard open")
 	}
 
-	// Create wizard (ephemeral) — a distinct form, distinct title.
+	// Create wizard (ephemeral) - a distinct form, distinct title.
 	m.form = newEphemeralForm(mgr.OrgNames())
 	if v := m.View(); v.Content == "" {
 		t.Fatal("nil view with ephemeral wizard open")

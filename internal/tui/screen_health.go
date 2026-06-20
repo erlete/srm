@@ -81,20 +81,20 @@ func (v healthView) view() string {
 		if v.flt.shown() {
 			return head + v.theme.Help.Render("no orgs match")
 		}
-		return v.theme.Help.Render("no data — press r to refresh")
+		return v.theme.Help.Render("no data - press r to refresh")
 	}
 	cards := make([]string, 0, len(v.reports))
 	for _, rep := range v.reports {
 		var auth, ret string
 		if rep.AuthErr != nil {
-			auth = v.theme.Offline.Render("✗ auth/list — " + rep.AuthErr.Error())
+			auth = v.theme.Offline.Render("✗ auth/list - " + rep.AuthErr.Error())
 		} else {
-			auth = v.theme.Online.Render(fmt.Sprintf("✓ auth/list — OK (%d runners, %d online)", rep.Runners, rep.Online))
+			auth = v.theme.Online.Render(fmt.Sprintf("✓ auth/list - OK (%d runners, %d online)", rep.Runners, rep.Online))
 		}
 		if rep.RetentionErr != nil {
-			ret = v.theme.Busy.Render("• retention — unavailable (App lacks Actions-policy permission)")
+			ret = v.theme.Busy.Render("• retention - unavailable (App lacks Actions-policy permission)")
 		} else {
-			ret = v.theme.StatusInfo.Render(fmt.Sprintf("• retention — %d days (max %d)", rep.RetentionDays, rep.RetentionMax))
+			ret = v.theme.StatusInfo.Render(fmt.Sprintf("• retention - %d days (max %d)", rep.RetentionDays, rep.RetentionMax))
 		}
 		card := lipgloss.JoinVertical(lipgloss.Left, v.theme.PanelTtl.Render(rep.Org), auth, ret)
 		w := v.width - 4

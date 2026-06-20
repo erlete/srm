@@ -1,4 +1,4 @@
-# srm configuration — prefer `srm init` over editing by hand.
+# srm configuration - prefer `srm init` over editing by hand.
 # Copy to /etc/srm/config.yaml (the standard for this sudo-operated tool; or
 # ~/.config/srm/config.yaml for non-root, or pass --config) and edit.
 #
@@ -7,9 +7,15 @@
 #
 # Multiple organizations are supported. Operations name their org explicitly
 # (--org, or implicitly when only one is configured); the TUI cycles its view
-# across them at runtime (press 'o'). The App private key is NOT stored here —
+# across them at runtime (press 'o'). The App private key is NOT stored here -
 # reference it via privateKeyPath, or import it into the encrypted secrets store
 # (set SRM_SECRETS_PASSPHRASE and accept the prompt in `srm init`).
+
+# Config-schema generation this file targets. srm stamps it (and `srm init`
+# writes it); srm migrates an older value forward on load and REFUSES a file from
+# a newer srm so unknown keys aren't silently dropped. Omit it in a hand-written
+# file and srm adopts the current version on first load.
+schemaVersion: 1
 
 # Bulk-operation fan-out (kept well under GitHub's 100-concurrent secondary limit).
 concurrency: 8
@@ -41,7 +47,7 @@ dryRun: false
 # these from the TUI Settings panel instead of editing by hand if you prefer.
 resourceMode: auto
 resources:
-  # These ARE the `auto` defaults, shown for reference — edit to override one
+  # These ARE the `auto` defaults, shown for reference - edit to override one
   # value, or delete a line to keep the auto default. Use systemd syntax: a
   # percentage ("25%", scales with the host) or an absolute ("3G", fixed). Quote
   # bare numbers so they stay strings.
@@ -53,19 +59,19 @@ resources:
 
 # Aggregate memory ceiling for ALL runners combined (auto mode only). This is the
 # box-wide lever that prevents many moderate jobs from collectively OOM'ing the
-# host — a per-runner cap can't. Empty = the pre-packaged 75% of RAM. Systemd
+# host - a per-runner cap can't. Empty = the pre-packaged 75% of RAM. Systemd
 # percentage, so it scales with the host on resize. Editable from the TUI Settings
 # panel.
 # sliceMemoryMax: "75%"
 
 # Cross-org isolation (OPT-IN). By default every org's runners share the single
-# runnerUser and the host-wide caches — no boundary between orgs. With
+# runnerUser and the host-wide caches - no boundary between orgs. With
 # perOrgUsers, each org runs as its own service user ("srm-<org>", or the per-org
 # runnerUser below) owning a private HOME (0700) + private dep/tool caches, so one
 # org cannot read another's runner credentials, checkouts, or caches. There is no
 # shared unix group (that would itself be a cross-org read channel); the tool
 # cache is per-org too. Roll out to existing runners one org at a time with
-# `srm runners refresh --org <org>` (migrates in place — no recreate).
+# `srm runners refresh --org <org>` (migrates in place - no recreate).
 isolation:
   perOrgUsers: true
 
@@ -89,7 +95,7 @@ orgs:
             - /etc/srm/setup/install-node.sh   # escape hatch for complex stacks
           persistentCachePaths: [/opt/hostedtoolcache]
 
-  # A second org — install the same App on it (its own installation ID).
+  # A second org - install the same App on it (its own installation ID).
   - name: globex
     appID: 123456
     installationID: 2345678
@@ -100,4 +106,4 @@ orgs:
     runnerUser: srm-globex   # optional: per-org service user (default srm-<org>; needs isolation.perOrgUsers)
     resources:            # field-level override of the host/auto defaults above
       memoryMax: 40%      # this org's jobs may use more of the box (other fields inherit;
-                          # mix % and absolute freely — e.g. "6G" for a fixed cap)
+                          # mix % and absolute freely - e.g. "6G" for a fixed cap)

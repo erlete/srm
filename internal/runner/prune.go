@@ -20,7 +20,7 @@ type PruneStats struct {
 // without bounding growth on GitHub's behalf. On dry-run it only tallies. It
 // deletes files (not directories): the package managers re-fetch any pruned
 // entry on next use, so file-level eviction is safe. The shared tool cache
-// (/opt/hostedtoolcache) is deliberately NOT pruned here — it is bounded by the
+// (/opt/hostedtoolcache) is deliberately NOT pruned here - it is bounded by the
 // number of toolchain versions and holds intentional seeds; pruning it safely
 // needs version-directory granularity (atomic, marker-aware), a separate concern.
 func (u *ubuntu) PruneDepCache(_ context.Context, maxAge time.Duration, dryRun bool) (PruneStats, error) {
@@ -44,7 +44,7 @@ func (u *ubuntu) PruneDepCache(_ context.Context, maxAge time.Duration, dryRun b
 			return nil
 		}
 		if accessTime(fi).After(cutoff) {
-			return nil // recently used — keep
+			return nil // recently used - keep
 		}
 		stats.Files++
 		stats.Bytes += fi.Size()

@@ -1,10 +1,10 @@
 // Package config loads the tool's configuration. Multiple GitHub organizations
 // are supported: each org carries its own GitHub App installation and defaults.
 // Operations name their org explicitly (--org, or implicitly when only one org
-// is configured) — there is no hidden "active" org that a command could silently
+// is configured) - there is no hidden "active" org that a command could silently
 // scope to.
 //
-// Auth is GitHub App only — see docs/GITHUB_APP_SETUP.md.
+// Auth is GitHub App only - see docs/GITHUB_APP_SETUP.md.
 package config
 
 import (
@@ -55,7 +55,7 @@ type OrgConfig struct {
 // runner's unit via the drop-in, so a runaway job is bounded to its own cgroup
 // instead of taking the host down. Values are passed through verbatim to systemd,
 // so they use systemd syntax (e.g. "2G", "0", "infinity", "80%"). An empty field
-// omits that directive — a zero ResourceLimits applies NO limits, preserving the
+// omits that directive - a zero ResourceLimits applies NO limits, preserving the
 // historical unbounded behavior, so this whole feature is opt-in.
 //
 // MemorySwapMax="0" is the highest-value setting: it stops a memory-hungry job
@@ -101,7 +101,7 @@ const ResourceModeAuto = "auto"
 // enforced by a parent systemd slice (srm.slice) under "auto" mode. It is a
 // systemd PERCENTAGE so the kernel evaluates it against live RAM: srm's runners
 // are collectively held to this fraction of the box, leaving the remainder for
-// the OS, sshd, and the runner listeners — the headroom whose absence let a
+// the OS, sshd, and the runner listeners - the headroom whose absence let a
 // swap-thrash once wedge sshd. Auto-scales on resize with no reconfiguration.
 const AutoSliceMemoryMax = "75%"
 
@@ -109,7 +109,7 @@ const AutoSliceMemoryMax = "75%"
 // used when ResourceMode is "auto". The memory caps are systemd percentages, so
 // the kernel evaluates them against the host's live RAM: a single runner is held
 // to a quarter of the box and begins reclaiming at a fifth, and both values
-// auto-scale when the host is resized — no reconfiguration. MemorySwapMax="0" is
+// auto-scale when the host is resized - no reconfiguration. MemorySwapMax="0" is
 // absolute (the anti-swap-thrash rule). CPUWeight/TasksMax are left unset (equal
 // CPU share is systemd's default; a PID cap doesn't track RAM). Any field can be
 // overridden per host (Resources) or per org (orgs[].resources). The aggregate
@@ -124,7 +124,7 @@ func AutoResourceLimits() ResourceLimits {
 
 // Isolation controls cross-org isolation on a shared host. By default (zero
 // value) every org's runners run as the single RunnerUser and share the
-// host-wide tool/dep caches — there is no process or data boundary between orgs.
+// host-wide tool/dep caches - there is no process or data boundary between orgs.
 //
 // With PerOrgUsers, each org gets its own service user ("srm-<slug(org)>", or
 // OrgConfig.RunnerUser) owning a private HOME ({installRoot}/{org}, 0700), a
@@ -132,7 +132,7 @@ func AutoResourceLimits() ResourceLimits {
 // (/opt/hostedtoolcache/<org>). No shared unix group is introduced: a shared
 // group would itself be a cross-org read channel, so isolation is by separate
 // ownership + 0700 directories, and the tool cache is per-org rather than shared
-// (public toolchains, re-fetched per org — the cost of true isolation).
+// (public toolchains, re-fetched per org - the cost of true isolation).
 type Isolation struct {
 	PerOrgUsers bool `koanf:"perOrgUsers" yaml:"perOrgUsers,omitempty"`
 }
@@ -207,6 +207,13 @@ func (c *Config) ToolCacheFor(org string) string {
 
 // Config is the fully-resolved tool configuration.
 type Config struct {
+	// SchemaVersion is the config-schema generation this file was written for.
+	// Load stamps it (migrating an older/unstamped file forward) and refuses a file
+	// from a NEWER srm - without it koanf would silently drop keys this binary
+	// doesn't know, discarding an operator's configuration. 0/absent = a
+	// pre-versioning (legacy) file, adopted as v1 on load. See CurrentSchemaVersion.
+	SchemaVersion int `koanf:"schemaVersion" yaml:"schemaVersion,omitempty"`
+
 	Orgs          []OrgConfig `koanf:"orgs" yaml:"orgs"`
 	DryRun        bool        `koanf:"dryRun" yaml:"dryRun"`
 	Concurrency   int         `koanf:"concurrency" yaml:"concurrency"`     // bulk-op fan-out, kept < 100
@@ -226,8 +233,8 @@ type Config struct {
 	// ResourceMode selects how the cgroup limits are derived. "" (the default)
 	// uses the literal Resources fields verbatim (empty = no limits, byte-identical
 	// to the historical behavior). "auto" (ResourceModeAuto) starts from the
-	// machine-relative percentage caps in AutoResourceLimits — which systemd scales
-	// against live RAM, so a host that gains memory/cores needs NO reconfiguration —
+	// machine-relative percentage caps in AutoResourceLimits - which systemd scales
+	// against live RAM, so a host that gains memory/cores needs NO reconfiguration -
 	// and still lets any explicit Resources / orgs[].resources field override a
 	// single value. In auto mode srm also writes a parent srm.slice capped at
 	// AutoSliceMemoryMax so the runners' AGGREGATE memory is bounded. See ResourcesFor.
@@ -236,7 +243,7 @@ type Config struct {
 	// SliceMemoryMax overrides the aggregate memory ceiling applied to the shared
 	// srm.slice in "auto" mode (systemd syntax, e.g. "80%"). Empty uses the
 	// pre-packaged AutoSliceMemoryMax. This is the box-wide ceiling for ALL runners
-	// COMBINED — the lever that actually prevents the host OOM a per-runner cap
+	// COMBINED - the lever that actually prevents the host OOM a per-runner cap
 	// can't. Ignored when ResourceMode is not "auto". See SliceMemoryMaxOrDefault.
 	SliceMemoryMax string `koanf:"sliceMemoryMax" yaml:"sliceMemoryMax,omitempty"`
 
@@ -269,13 +276,13 @@ const (
 	DefaultInstallRoot = "/opt/actions-runners"
 	// DefaultToolCacheRoot is the host-wide tool cache (RUNNER_TOOL_CACHE). All
 	// runners point AGENT_TOOLSDIRECTORY here so a version one runner downloads
-	// (or `srm provision` seeds) is reused by every runner — like the GitHub-
+	// (or `srm provision` seeds) is reused by every runner - like the GitHub-
 	// hosted image's /opt/hostedtoolcache.
 	DefaultToolCacheRoot = "/opt/hostedtoolcache"
 	// DefaultCacheRoot is the host-wide build-tool cache root. srm points each
 	// package manager's cache env var (see ToolCacheEnv) at a subdir here, so jobs
-	// reuse host-persistent dependency caches across runs — and across all runners
-	// on the host — instead of GitHub's 10 GB/repo cache service. No workflow
+	// reuse host-persistent dependency caches across runs - and across all runners
+	// on the host - instead of GitHub's 10 GB/repo cache service. No workflow
 	// changes needed: these are consumed by tools running in `run:` steps.
 	DefaultCacheRoot = "/opt/srm-cache"
 )
@@ -285,8 +292,8 @@ type EnvVar struct{ Key, Val string }
 
 // ToolCacheEnv returns the build-tool cache-location env vars pointing each
 // package manager at a host-persistent directory under root. Injected into every
-// runner's systemd drop-in (process env) so the tools — which run in `run:`
-// steps and read these from the environment — keep their caches on the host
+// runner's systemd drop-in (process env) so the tools - which run in `run:`
+// steps and read these from the environment - keep their caches on the host
 // rather than round-tripping GitHub's capped cache. Order is stable so the
 // generated drop-in is deterministic. Paths are POSIX (the host is Ubuntu x64).
 func ToolCacheEnv(root string) []EnvVar {
@@ -307,7 +314,47 @@ func defaults() *Config {
 		Concurrency:   8,
 		RunnerVersion: DefaultRunnerVersion,
 		RunnerUser:    DefaultRunnerUser,
+		// SchemaVersion is intentionally left 0 so a loaded file's absent/legacy
+		// value stays 0 and migrate() can adopt it; a fresh (missing-file) config is
+		// likewise stamped to current by migrate().
 	}
+}
+
+// CurrentSchemaVersion is the config-schema generation this srm writes and
+// understands. Bump it whenever the on-disk config shape changes in a way an older
+// srm couldn't read, and register a migration FROM the previous version in
+// configMigrations. This is the control-plane half of progressive updates: it lets
+// a newer srm migrate an older config forward and refuse a config from a newer srm.
+const CurrentSchemaVersion = 1
+
+// configMigrations upgrades a Config in place FROM the keyed schema version to the
+// next. Every step in [0, CurrentSchemaVersion) MUST have an entry - migrate()
+// errors loudly otherwise, so a forgotten registration after a version bump is
+// caught by TestSchemaMigrationChainComplete rather than at a real load. Each
+// migration is a pure, idempotent in-memory transform.
+var configMigrations = map[int]func(*Config){
+	// 0 (pre-versioning / unstamped) -> 1: the v1.0/v1.1 config shape already IS
+	// schema v1, so adoption is a structural no-op - migrate() just stamps it.
+	0: func(*Config) {},
+}
+
+// migrate brings a just-loaded config up to CurrentSchemaVersion, or refuses it. A
+// config from a NEWER srm (schemaVersion > current) is rejected rather than loaded:
+// koanf silently drops unknown keys, so loading it would discard configuration the
+// operator wrote - and a later SaveConfig would persist the lossy copy.
+func (c *Config) migrate() error {
+	if c.SchemaVersion > CurrentSchemaVersion {
+		return fmt.Errorf("config schemaVersion %d is newer than this srm understands (%d) - upgrade srm; refusing to load so unknown keys aren't silently dropped", c.SchemaVersion, CurrentSchemaVersion)
+	}
+	for c.SchemaVersion < CurrentSchemaVersion {
+		m, ok := configMigrations[c.SchemaVersion]
+		if !ok {
+			return fmt.Errorf("no config migration registered from schemaVersion %d (srm bug)", c.SchemaVersion)
+		}
+		m(c)
+		c.SchemaVersion++
+	}
+	return nil
 }
 
 // Load reads and validates configuration from a YAML file. A missing file is
@@ -327,6 +374,12 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("stat config %s: %w", path, err)
 	}
 
+	// Bring the schema up to date (or refuse a too-new file) before interpreting
+	// any other field.
+	if err := cfg.migrate(); err != nil {
+		return nil, err
+	}
+
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = 8
 	}
@@ -337,7 +390,7 @@ func Load(path string) (*Config, error) {
 		cfg.RunnerUser = DefaultRunnerUser
 	}
 	if cfg.ResourceMode != "" && cfg.ResourceMode != ResourceModeAuto {
-		return nil, fmt.Errorf("resourceMode %q is invalid — use %q or omit it (a typo would silently leave jobs UNBOUNDED)", cfg.ResourceMode, ResourceModeAuto)
+		return nil, fmt.Errorf("resourceMode %q is invalid - use %q or omit it (a typo would silently leave jobs UNBOUNDED)", cfg.ResourceMode, ResourceModeAuto)
 	}
 	if err := cfg.validateIsolation(); err != nil {
 		return nil, err
@@ -358,10 +411,10 @@ func (c *Config) validateIsolation() error {
 	for _, oc := range c.Orgs {
 		u := c.RunnerUserFor(oc.Name)
 		if !validUserName(u) {
-			return fmt.Errorf("isolation: org %q resolves to invalid service user %q — set orgs[].runnerUser", oc.Name, u)
+			return fmt.Errorf("isolation: org %q resolves to invalid service user %q - set orgs[].runnerUser", oc.Name, u)
 		}
 		if prev, ok := userToOrg[u]; ok {
-			return fmt.Errorf("isolation: orgs %q and %q both map to service user %q — set a distinct orgs[].runnerUser for one", prev, oc.Name, u)
+			return fmt.Errorf("isolation: orgs %q and %q both map to service user %q - set a distinct orgs[].runnerUser for one", prev, oc.Name, u)
 		}
 		userToOrg[u] = oc.Name
 	}

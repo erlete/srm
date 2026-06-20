@@ -34,7 +34,7 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Build (linux/amd64 — the only supported target)
+      - name: Build (linux/amd64 - the only supported target)
         env:
           GOOS: linux
           GOARCH: amd64
@@ -44,7 +44,7 @@ jobs:
         run: go test ./...
 
   vuln:
-    # Fails the build on any known vulnerability reachable in our code or deps —
+    # Fails the build on any known vulnerability reachable in our code or deps -
     # the "no vulns" gate, kept separate so a finding is distinct from a test break.
     runs-on: ubuntu-latest
     steps:

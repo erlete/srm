@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// httpDownload must create the destination's parent directory if it is absent —
+// httpDownload must create the destination's parent directory if it is absent -
 // install assumes nothing pre-exists, so e.g. {installRoot}/.cache works on a
 // fresh host or after a full uninstall removed installRoot (regression: the
 // ".cache/...tar.gz.tmp: no such file or directory" bug found live on ARMORA).

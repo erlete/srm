@@ -11,7 +11,7 @@ import (
 )
 
 // The incremental "/" filter must narrow the visible rows on EVERY list view,
-// not just Persistent — the four views below each match a different haystack but
+// not just Persistent - the four views below each match a different haystack but
 // share the same filterState behavior.
 
 func TestRunnersFilterNarrows(t *testing.T) {

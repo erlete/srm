@@ -31,7 +31,7 @@ type Manager struct {
 }
 
 // New creates a Manager over the given config and secret store. cfgPath is the
-// file the config was loaded from (empty disables SaveConfig — e.g. in tests).
+// file the config was loaded from (empty disables SaveConfig - e.g. in tests).
 func New(cfg *config.Config, sec secrets.Store, cfgPath string) *Manager {
 	return &Manager{cfg: cfg, cfgPath: cfgPath, sec: sec, clients: make(map[string]ghub.Client)}
 }
@@ -45,10 +45,10 @@ func (m *Manager) ConfigPath() string { return m.cfgPath }
 // SaveConfig writes the in-memory config back to its file (0600), creating the
 // parent dir if needed. It mirrors `srm init`'s full-document marshal, so the file
 // is tool-owned (comments in a hand-edited file are not preserved). No secrets are
-// written — the App key lives in the secrets store or is referenced by path.
+// written - the App key lives in the secrets store or is referenced by path.
 func (m *Manager) SaveConfig() error {
 	if m.cfgPath == "" {
-		return fmt.Errorf("no config path is set — cannot persist changes")
+		return fmt.Errorf("no config path is set - cannot persist changes")
 	}
 	if dir := filepath.Dir(m.cfgPath); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -66,7 +66,7 @@ func (m *Manager) SaveConfig() error {
 func (m *Manager) OrgNames() []string { return m.cfg.OrgNames() }
 
 // requireOrg validates that an explicit, configured org was supplied. Operations
-// do NOT fall back to a hidden active org — callers must name the org so a
+// do NOT fall back to a hidden active org - callers must name the org so a
 // destructive command can never silently hit the wrong one.
 func (m *Manager) requireOrg(org string) (string, error) {
 	if org == "" {

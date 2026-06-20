@@ -12,7 +12,7 @@ import (
 // persistent cache paths) to THIS host. Must run as root on the target. Honors
 // dry-run. With per-org isolation, apt/scripts run ONCE host-global, then the
 // tool-cache seeds are warmed into EACH org's private tool cache (owned by that
-// org's user) — otherwise isolated runners would point at an empty per-org cache.
+// org's user) - otherwise isolated runners would point at an empty per-org cache.
 func (m *Manager) ProvisionHost(ctx context.Context, man core.DependencyManifest) error {
 	if m.cfg.DryRun {
 		return nil

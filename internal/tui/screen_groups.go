@@ -143,5 +143,5 @@ func yesNo(b bool) string {
 	if b {
 		return "yes"
 	}
-	return "—"
+	return "-"
 }

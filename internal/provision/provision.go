@@ -1,7 +1,7 @@
 // Package provision applies a profile's host-once dependency manifest to an
 // Ubuntu x64 host (apt packages, setup scripts, persistent cache paths),
 // idempotently and with drift detection. The host is the durable substrate;
-// runners consume it. Self-hosted runners ship bare — no Node/Python/Docker —
+// runners consume it. Self-hosted runners ship bare - no Node/Python/Docker -
 // so without this a job that "just works" on ubuntu-latest fails with 127.
 package provision
 
@@ -52,7 +52,7 @@ func NewUbuntuFor(runnerUser, toolCacheRoot string) Reconciler {
 	return &ubuntu{runnerUser: runnerUser, toolCacheRoot: toolCacheRoot}
 }
 
-// Apply installs apt packages (idempotently — apt is a no-op for present ones),
+// Apply installs apt packages (idempotently - apt is a no-op for present ones),
 // creates persistent cache dirs owned by the runner user, runs setup scripts
 // (the bring-your-own escape hatch for complex stacks), and seeds the shared
 // tool cache (node/go/python) so setup-* actions hit a warm cache.
@@ -172,7 +172,7 @@ func (u *ubuntu) seedTarball(ctx context.Context, cacheName, version, url string
 	return nil
 }
 
-// pythonManifestURL is actions/python-versions' static version manifest — the
+// pythonManifestURL is actions/python-versions' static version manifest - the
 // same source actions/setup-python resolves against. It's a raw file, so reading
 // it avoids the authenticated-GitHub-API rate limit.
 const pythonManifestURL = "https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json"
@@ -189,7 +189,7 @@ type pyRelease struct {
 }
 
 // seedPython pre-populates <root>/Python/<version>/x64. setup-python does NOT
-// build from python.org — it pulls a per-Ubuntu prebuilt CPython from the
+// build from python.org - it pulls a per-Ubuntu prebuilt CPython from the
 // actions/python-versions releases and runs that asset's setup.sh, which copies
 // into $AGENT_TOOLSDIRECTORY/Python/<ver>/x64 and writes the x64.complete marker.
 // We do exactly that, so the layout/marker are identical to a real cache hit.
@@ -224,7 +224,7 @@ func (u *ubuntu) seedPython(ctx context.Context, version string) error {
 		return fmt.Errorf("python %s asset missing setup.sh", version)
 	}
 	// setup.sh copies ./* into $AGENT_TOOLSDIRECTORY/Python/<ver>/x64 and writes the
-	// x64.complete marker — it uses paths relative to its CWD, so it must run with
+	// x64.complete marker - it uses paths relative to its CWD, so it must run with
 	// the extracted directory as the working directory.
 	cmd := exec.CommandContext(ctx, "bash", "setup.sh")
 	cmd.Dir = extract

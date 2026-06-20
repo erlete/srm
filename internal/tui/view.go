@@ -74,7 +74,7 @@ func (m Model) bodyView(h int) string {
 		if m.createTotal > 0 {
 			pct = float64(m.createDone) / float64(m.createTotal)
 		}
-		label := fmt.Sprintf("%s  %d/%d — %s", m.spin.View(), m.createDone, m.createTotal, m.createMsg)
+		label := fmt.Sprintf("%s  %d/%d - %s", m.spin.View(), m.createDone, m.createTotal, m.createMsg)
 		box := m.theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left,
 			m.theme.ModalT.Render("Provisioning runners"),
 			"",

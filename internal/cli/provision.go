@@ -16,7 +16,7 @@ import (
 var nodeRuntimeLibs = []string{"libatomic1", "libstdc++6", "ca-certificates", "curl"}
 
 // Generated setup scripts for the convenience flags. They run as root on the
-// host. NodeSource installs Node into /usr/bin (a system path — on every
+// host. NodeSource installs Node into /usr/bin (a system path - on every
 // runner's captured PATH and unaffected by the service ProtectHome sandbox).
 const nodeSourceScript = `#!/usr/bin/env bash
 set -euo pipefail
@@ -37,7 +37,7 @@ func newProvisionCmd() *cobra.Command {
 	var node, corepack bool
 	c := &cobra.Command{
 		Use:   "provision",
-		Short: "Apply the host dependency layer (apt packages, Node, setup scripts) — run as root on the target",
+		Short: "Apply the host dependency layer (apt packages, Node, setup scripts) - run as root on the target",
 		Long: "Self-hosted runners ship bare, so the job toolchain lives on the host. " +
 			"provision applies the config `host:` manifest plus any --apt/--node/--corepack " +
 			"flags, idempotently. Provision the host before creating runners so the toolchain " +
@@ -83,13 +83,13 @@ func newProvisionCmd() *cobra.Command {
 			}
 
 			if man.Empty() {
-				return fmt.Errorf("nothing to provision — set host.aptPackages in config or pass --apt/--node/--corepack")
+				return fmt.Errorf("nothing to provision - set host.aptPackages in config or pass --apt/--node/--corepack")
 			}
 
 			ctx := context.Background()
 			if missing, derr := mgr.HostDrift(ctx, man); derr == nil {
 				if len(missing) == 0 {
-					fmt.Println("apt/scripts already present — applying anyway (idempotent)")
+					fmt.Println("apt/scripts already present - applying anyway (idempotent)")
 				} else {
 					fmt.Printf("missing, will install: %v\n", missing)
 				}

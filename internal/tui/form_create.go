@@ -34,15 +34,15 @@ func newCreateForm(orgs []string) *createForm {
 			huh.NewSelect[string]().Title("Org").Options(orgOptions(orgs)...).Value(&cf.org),
 			huh.NewInput().Title("Name prefix").Placeholder("temporal").Value(&cf.prefix).Validate(nonEmpty),
 			huh.NewInput().Title("Count").Value(&cf.count).Validate(posInt),
-			huh.NewInput().Title("Labels — comma-separated, optional").Placeholder("temporal").Value(&cf.labels),
-			huh.NewInput().Title("Group — optional, created if missing").Placeholder("temporal").Value(&cf.group),
+			huh.NewInput().Title("Labels - comma-separated, optional").Placeholder("temporal").Value(&cf.labels),
+			huh.NewInput().Title("Group - optional, created if missing").Placeholder("temporal").Value(&cf.group),
 		),
 	).WithWidth(54)
 	return cf
 }
 
 // newEphemeralForm builds the create wizard for ephemeral slot lanes. No name
-// prefix is collected — slots are numbered 1..N — and the help text names them
+// prefix is collected - slots are numbered 1..N - and the help text names them
 // plainly so the ephemeral nature is never mistaken for a persistent runner.
 func newEphemeralForm(orgs []string) *createForm {
 	cf := &createForm{ephemeral: true, count: "1"}
@@ -54,8 +54,8 @@ func newEphemeralForm(orgs []string) *createForm {
 			huh.NewSelect[string]().Title("Org").Options(orgOptions(orgs)...).Value(&cf.org),
 			huh.NewNote().Description("Ephemeral slots are numbered lanes (1..N). Each mints a single-use JIT registration per job and runs on a clean slate."),
 			huh.NewInput().Title("Slot count").Value(&cf.count).Validate(posInt),
-			huh.NewInput().Title("Labels — comma-separated, optional").Placeholder("temporal").Value(&cf.labels),
-			huh.NewInput().Title("Group — optional, created if missing").Placeholder("temporal").Value(&cf.group),
+			huh.NewInput().Title("Labels - comma-separated, optional").Placeholder("temporal").Value(&cf.labels),
+			huh.NewInput().Title("Group - optional, created if missing").Placeholder("temporal").Value(&cf.group),
 		),
 	).WithWidth(58)
 	return cf

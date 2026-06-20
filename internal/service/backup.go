@@ -13,7 +13,7 @@ import (
 // BackupConfigDir writes a gzip-compressed tar of every regular file directly
 // inside srcDir (the srm config dir: config.yaml, secrets.age, per-org *.pem) to
 // outPath (0600), returning the path written. It is the safety net taken before
-// destructive lifecycle ops — the GitHub App private key is shown once by GitHub
+// destructive lifecycle ops - the GitHub App private key is shown once by GitHub
 // and is otherwise unrecoverable. The config dir is flat, so subdirectories are
 // not recursed; entries are stored under their bare basename so restore can never
 // be tricked into a path-traversal write.
@@ -41,7 +41,7 @@ func BackupConfigDir(srcDir, outPath string) (string, error) {
 			return "", err
 		}
 		hdr := &tar.Header{
-			Name:    e.Name(), // bare basename — traversal-safe on restore
+			Name:    e.Name(), // bare basename - traversal-safe on restore
 			Mode:    int64(info.Mode().Perm()),
 			Size:    info.Size(),
 			ModTime: info.ModTime(),

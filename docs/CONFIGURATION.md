@@ -3,9 +3,9 @@
 `srm` reads a single YAML file. Resolution precedence:
 
 1. `--config <path>` (explicit override)
-2. `/etc/srm/config.yaml` — used automatically when it exists, and the default
+2. `/etc/srm/config.yaml` - used automatically when it exists, and the default
    target under sudo (so `sudo srm init` seeds `/etc/srm`)
-3. `$HOME/.config/srm/config.yaml` — per-user fallback for non-root invocations
+3. `$HOME/.config/srm/config.yaml` - per-user fallback for non-root invocations
 
 The age secrets file (`secrets.age`) lives next to whichever config is active.
 `srm init` writes a config interactively; this page is the hand-edit reference.
@@ -15,19 +15,20 @@ Invalid `resourceMode` and isolation user collisions are rejected at load.
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `orgs` | list | — (required) | The organizations srm manages. See [Org](#org-orgs). |
+| `schemaVersion` | int | current | Config-schema generation, stamped by srm. Migrated forward on load; a value newer than this srm understands is refused (so unknown keys aren't silently dropped). Usually omitted in hand-written files. |
+| `orgs` | list | - (required) | The organizations srm manages. See [Org](#org-orgs). |
 | `concurrency` | int | small | Bulk-op fan-out (kept < 100). |
-| `runnerVersion` | string | — | Pinned default actions-runner release (e.g. `"2.335.1"`). |
+| `runnerVersion` | string | - | Pinned default actions-runner release (e.g. `"2.335.1"`). |
 | `runnerUser` | string | `srm` | Dedicated non-login service user that owns runner trees (single-user mode). |
 | `dryRun` | bool | `false` | Preview mutations without calling GitHub (also `--dry-run`). |
-| `logFile` | string | — | Optional log file path. |
+| `logFile` | string | - | Optional log file path. |
 | `cacheRetentionDays` | int | command default | Default age cutoff for `srm cache prune`. |
-| `resources` | map | — (no caps) | Host-wide per-runner cgroup caps. See [Resources](#resources-resources). |
+| `resources` | map | - (no caps) | Host-wide per-runner cgroup caps. See [Resources](#resources-resources). |
 | `resourceMode` | string | `""` | `""` = literal `resources`; `"auto"` = machine-relative %. See [Capacity](#capacity-policy). |
 | `sliceMemoryMax` | string | `75%` | Aggregate `srm.slice` ceiling (auto mode only). |
 | `isolation` | map | off | Per-org users + caches. See [Isolation](#isolation-isolation). |
 | `hardening` | map | off | Optional persistent-unit hardening. See [Hardening](#hardening-hardening). |
-| `host` | map | — | Host-once dependency manifest for `srm provision`. See [Host](#host-host). |
+| `host` | map | - | Host-once dependency manifest for `srm provision`. See [Host](#host-host). |
 
 ## Org (`orgs[]`)
 
@@ -59,21 +60,21 @@ permissions (**Organization → Self-hosted runners: Read & write**, plus option
   reconfiguration. Defaults: `MemoryHigh=20%`, `MemoryMax=25%`, `MemorySwapMax=0`.
   Any explicit `resources` (host) or `orgs[].resources` (org) field overrides a
   single auto value. In auto mode srm also writes a parent **`srm.slice`** capped
-  at `sliceMemoryMax` (default `75%`) with `MemorySwapMax=0` — the box-wide
+  at `sliceMemoryMax` (default `75%`) with `MemorySwapMax=0` - the box-wide
   ceiling for **all runners combined**, which is what actually prevents many
   moderate jobs from collectively OOM'ing the host.
 
 ### `resources` (and `orgs[].resources`)
 
-All values are **systemd syntax strings** — a percentage (`"25%"`), a size
+All values are **systemd syntax strings** - a percentage (`"25%"`), a size
 (`"3G"`), `"0"`, or `"infinity"`. Quote bare numbers/percentages.
 
 | Key | Meaning |
 | --- | --- |
-| `memoryHigh` | Soft cap — throttle + reclaim above this. |
-| `memoryMax` | Hard cap — the cgroup is OOM-killed above this. |
+| `memoryHigh` | Soft cap - throttle + reclaim above this. |
+| `memoryMax` | Hard cap - the cgroup is OOM-killed above this. |
 | `memorySwapMax` | Swap cap (`"0"` = no swap; the anti-thrash rule). |
-| `cpuWeight` | Relative CPU share (1–10000; 100 = default). |
+| `cpuWeight` | Relative CPU share (1-10000; 100 = default). |
 | `tasksMax` | PID cap (fork-bomb guard). |
 
 Changes apply to **new** runners; run `srm runners refresh` to push them onto
@@ -91,7 +92,7 @@ There is **no shared unix group** (a shared group is itself a cross-org read
 channel). Cross-org reads of creds/caches are denied. Two orgs that slug to the
 same user are rejected at load (set an explicit `orgs[].runnerUser` to resolve).
 Migration is in place: `srm runners refresh [--org]` rewrites the drop-in
-(`User=`), re-chowns the tree, and restarts — no recreate/re-register.
+(`User=`), re-chowns the tree, and restarts - no recreate/re-register.
 
 ## Hardening (`hardening`)
 

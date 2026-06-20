@@ -5,19 +5,19 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 )
 
-// Palette — 256-color indices chosen to read well on both dark and light
+// Palette - 256-color indices chosen to read well on both dark and light
 // terminals. A single place to retune the whole UI. (lipgloss.Color returns an
 // interface, so these are vars, not consts.)
 var (
-	colPrimary = lipgloss.Color("212") // pink — brand / active
-	colAccent  = lipgloss.Color("99")  // purple — secondary accent
+	colPrimary = lipgloss.Color("212") // pink - brand / active
+	colAccent  = lipgloss.Color("99")  // purple - secondary accent
 	colDim     = lipgloss.Color("240") // borders / inactive chrome
 	colMuted   = lipgloss.Color("245") // help / secondary text
 	colText    = lipgloss.Color("252") // primary text
-	colOK      = lipgloss.Color("42")  // green — online / success
-	colWarn    = lipgloss.Color("214") // amber — busy / warning
-	colErr     = lipgloss.Color("203") // red — offline / error
-	colInfo    = lipgloss.Color("75")  // blue — info / local
+	colOK      = lipgloss.Color("42")  // green - online / success
+	colWarn    = lipgloss.Color("214") // amber - busy / warning
+	colErr     = lipgloss.Color("203") // red - offline / error
+	colInfo    = lipgloss.Color("75")  // blue - info / local
 )
 
 // Theme holds every lipgloss style the TUI uses.
@@ -78,7 +78,7 @@ func NewTheme() Theme {
 		// Both tab states carry the same bottom-border row so every tab is the same
 		// height and their labels share a baseline (without it the active tab is one
 		// row taller and JoinHorizontal drops the inactive labels onto the rule row).
-		// The active tab gets a bright underline; inactive tabs a dim one — together a
+		// The active tab gets a bright underline; inactive tabs a dim one - together a
 		// continuous tab rule with the selection highlighted.
 		TabOn:    lipgloss.NewStyle().Bold(true).Foreground(colPrimary).Padding(0, 2).Border(lipgloss.RoundedBorder(), false, false, true, false).BorderForeground(colPrimary),
 		TabOff:   lipgloss.NewStyle().Foreground(colMuted).Padding(0, 2).Border(lipgloss.RoundedBorder(), false, false, true, false).BorderForeground(colDim),
@@ -108,8 +108,8 @@ func NewTheme() Theme {
 	}
 }
 
-// fillWidth grows the LAST column so the table's rows — and the full-width
-// selection highlight + header rule — span the terminal width w. bubbles renders
+// fillWidth grows the LAST column so the table's rows - and the full-width
+// selection highlight + header rule - span the terminal width w. bubbles renders
 // every cell with one column of horizontal padding per side, so a row is
 // sum(col.Width)+2*len(cols) wide; the leftover is handed to the trailing column
 // (slack sits at the right edge, the natural full-width look).

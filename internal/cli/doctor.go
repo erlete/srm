@@ -64,21 +64,21 @@ func newDoctorCmd() *cobra.Command {
 				}
 				fmt.Printf("auth/list:   OK (%d runners)\n", len(rs))
 				if ret, err := mgr.Retention(ctx, org); err != nil {
-					fmt.Printf("retention:   unavailable — App likely lacks the Actions-policy permission (%v)\n", err)
+					fmt.Printf("retention:   unavailable - App likely lacks the Actions-policy permission (%v)\n", err)
 				} else {
 					fmt.Printf("retention:   %d days (max allowed %d)\n", ret.Days, ret.MaxAllowedDays)
 				}
 				if res := mgr.Config().ResourcesFor(org); res.IsZero() {
-					fmt.Printf("limits:      none — jobs are unbounded; set `resourceMode: auto` to OOM-proof (see config.example.yaml)\n")
+					fmt.Printf("limits:      none - jobs are unbounded; set `resourceMode: auto` to OOM-proof (see config.example.yaml)\n")
 				} else if mgr.Config().ResourceMode == config.ResourceModeAuto {
-					fmt.Printf("limits:      auto (machine-relative, scales with host RAM) — %s\n", limitsLine(res))
-					fmt.Printf("slice cap:   %s (srm.slice — aggregate ceiling for ALL runners combined)\n", mgr.Config().SliceMemoryMaxOrDefault())
+					fmt.Printf("limits:      auto (machine-relative, scales with host RAM) - %s\n", limitsLine(res))
+					fmt.Printf("slice cap:   %s (srm.slice - aggregate ceiling for ALL runners combined)\n", mgr.Config().SliceMemoryMaxOrDefault())
 				} else {
 					fmt.Printf("limits:      %s\n", limitsLine(res))
 				}
 			}
 
-			// Host toolchain probe — self-hosted runners ship bare, so jobs that
+			// Host toolchain probe - self-hosted runners ship bare, so jobs that
 			// expect node/pnpm/etc. fail with 127 if the host wasn't provisioned.
 			// (Reflects this host's PATH; runners inherit the same system dirs.)
 			fmt.Println()
@@ -87,7 +87,7 @@ func newDoctorCmd() *cobra.Command {
 				if p, err := exec.LookPath(bin); err == nil {
 					fmt.Printf("  %-8s %s\n", bin, p)
 				} else {
-					fmt.Printf("  %-8s (not found — `srm provision`)\n", bin)
+					fmt.Printf("  %-8s (not found - `srm provision`)\n", bin)
 				}
 			}
 			if man := mgr.HostManifest(); !man.Empty() {

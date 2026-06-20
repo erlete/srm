@@ -1,6 +1,6 @@
 # Setting up the GitHub App for `srm`
 
-`srm` authenticates as a **GitHub App installation** — not a personal access
+`srm` authenticates as a **GitHub App installation** - not a personal access
 token. Installation tokens auto-refresh (~1 hour), are scoped to exactly the
 permissions you grant, and get higher API rate limits. This is the **only**
 supported auth mode.
@@ -14,7 +14,7 @@ private key are shared across installations.
 ## 1. Create the App
 
 As an org owner: **Org Settings → Developer settings → GitHub Apps → New GitHub App.**
-(You may also create it under a personal account — it can still be installed on
+(You may also create it under a personal account - it can still be installed on
 organizations.)
 
 `srm` authenticates as an **installation**, never on behalf of a user, so every
@@ -43,16 +43,16 @@ and **Account permissions** at their defaults.
 Under **Permissions → Organization permissions**:
 
 **Required**
-- **Self-hosted runners: Read and write** — list/create/delete runners, mint
+- **Self-hosted runners: Read and write** - list/create/delete runners, mint
   registration & JIT tokens, and manage runner groups and labels.
 
 **Optional** (only for the artifact/log **retention** panel and the retention
 line in `srm doctor`)
-- **Administration: Read and write** — gates the org-level artifact-and-log
+- **Administration: Read and write** - gates the org-level artifact-and-log
   retention API. Without it, runner management works normally and retention
   simply shows “unavailable”.
 
-**Do not** select any **Repository permissions** — `srm` makes no
+**Do not** select any **Repository permissions** - `srm` makes no
 repository-level calls. In particular the repository **Artifact metadata**
 permission is *not* what drives retention (that is org **Administration**,
 above), so leave it unselected. **Metadata: Read** shows as **Mandatory** on the
@@ -75,7 +75,7 @@ sudo install -m 0600 ~/Downloads/acme-srm.*.private-key.pem /etc/srm/acme.pem
 ## 4. Install the App on your org
 
 App settings → **Install App → choose the org → Install.** Granting “All
-repositories” is fine — runner management is org-level, so repository selection
+repositories” is fine - runner management is org-level, so repository selection
 does not affect runner operations, but an installation must exist.
 
 ## 5. Collect the three values
@@ -83,12 +83,12 @@ does not affect runner operations, but an installation must exist.
 | Value | Where to find it |
 | --- | --- |
 | **App ID** | App settings → *About* (“App ID: 123456”). |
-| **Installation ID** | After installing: **Org Settings → GitHub Apps → Configure** the app — the page URL ends with `…/installations/7654321`. (Or `gh api /orgs/<org>/installation -q .id`.) |
+| **Installation ID** | After installing: **Org Settings → GitHub Apps → Configure** the app - the page URL ends with `…/installations/7654321`. (Or `gh api /orgs/<org>/installation -q .id`.) |
 | **Private key path** | Where you saved the `.pem` (e.g. `/etc/srm/acme.pem`). |
 
 ## 6. Configure `srm`
 
-Interactive (recommended) — run once per org:
+Interactive (recommended) - run once per org:
 
 ```bash
 srm init
@@ -170,7 +170,7 @@ The App private key can either live as a `.pem` referenced by `privateKeyPath`,
 or be stored **encrypted** in srm’s secrets file:
 
 - Export `SRM_SECRETS_PASSPHRASE` in the environment.
-- During `srm init`, accept “encrypt the private key” — it stores the key under
+- During `srm init`, accept “encrypt the private key” - it stores the key under
   `app_key:<org>` in `secrets.age` next to the active config (e.g.
   `/etc/srm/secrets.age`, age, mode 0600) and clears `privateKeyPath`.
 - At runtime `srm` resolves the key from `privateKeyPath` first, then from the

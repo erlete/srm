@@ -37,7 +37,7 @@ func IsEphemeralRunnerName(name string) bool { return runner.IsEphemeralRunnerNa
 
 // ListEphemeralSlots enumerates the ephemeral slot lanes installed on THIS host
 // and inspects each (active state, restart count, drop-in conformance, memory).
-// orgFilter (non-empty) scopes to one org. Host-local — slots only exist where
+// orgFilter (non-empty) scopes to one org. Host-local - slots only exist where
 // they were created. Must run as root on the host for full inspection. Ordered by
 // org, then slot number.
 func (m *Manager) ListEphemeralSlots(ctx context.Context, orgFilter string) ([]EphemeralSlot, error) {
@@ -103,7 +103,7 @@ func (m *Manager) CreateEphemeralRunners(ctx context.Context, spec DeploySpec, p
 		}
 		groupID = g.ID
 	}
-	// JIT minting REQUIRES a real group id — runner_group_id:0 is rejected by the
+	// JIT minting REQUIRES a real group id - runner_group_id:0 is rejected by the
 	// API, which would make a slot hot-loop forever. Default to the org's configured
 	// group, else the org "Default" group (id 1).
 	if groupID == 0 {
@@ -173,7 +173,7 @@ func (m *Manager) DestroyEphemeralSlot(ctx context.Context, org, slot string) er
 
 // defaultGroupID resolves the runner group for an ephemeral slot when none was
 // given: the org's configured DefaultGroupID, else 1 (the org "Default" group).
-// JIT minting requires a real group id — 0 is rejected by the API.
+// JIT minting requires a real group id - 0 is rejected by the API.
 func (m *Manager) defaultGroupID(org string) int64 {
 	if oc, ok := m.cfg.Org(org); ok && oc.DefaultGroupID > 0 {
 		return oc.DefaultGroupID
@@ -181,7 +181,7 @@ func (m *Manager) defaultGroupID(org string) int64 {
 	return 1
 }
 
-// validSlot reports whether s is a numeric slot id — guards the root os.RemoveAll
+// validSlot reports whether s is a numeric slot id - guards the root os.RemoveAll
 // in the orchestrator against a traversal like "../../x" reaching it via filepath.Join.
 func validSlot(s string) bool {
 	if s == "" {
@@ -262,7 +262,7 @@ func (m *Manager) RunCycle(ctx context.Context, org, slot string) error {
 			_ = orch.ClearJIT(org, slot)
 		}
 		if runErr == nil {
-			runErr = fmt.Errorf("runner still registered after the job — likely a misconfigured cycle")
+			runErr = fmt.Errorf("runner still registered after the job - likely a misconfigured cycle")
 		}
 	}
 	if runErr != nil {

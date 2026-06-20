@@ -3,7 +3,7 @@
 // age-encrypted file (see age_file.go); EnvStore is a zero-setup fallback.
 //
 // Short-lived GitHub tokens (registration/remove tokens, ~1h) are NEVER stored
-// here — they are minted on demand and discarded.
+// here - they are minted on demand and discarded.
 package secrets
 
 import (

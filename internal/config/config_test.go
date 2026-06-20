@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,87 @@ import (
 
 	"github.com/erlete/srm/internal/core"
 )
+
+// A pre-versioning (no schemaVersion) config must load and be adopted as the
+// current schema generation - existing v1.0/v1.1 configs keep working untouched.
+func TestSchemaVersionStampsLegacy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("orgs:\n  - name: acme\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("load legacy config: %v", err)
+	}
+	if got.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("legacy SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// A config written by a NEWER srm must be refused, not loaded - koanf would
+// otherwise silently drop the keys this binary doesn't know.
+func TestSchemaVersionRejectsNewer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yml := fmt.Sprintf("schemaVersion: %d\norgs:\n  - name: acme\n", CurrentSchemaVersion+1)
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected Load to reject a newer schemaVersion")
+	}
+}
+
+// A current-version config round-trips at the same version (no spurious migration).
+func TestSchemaVersionRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yml := fmt.Sprintf("schemaVersion: %d\norgs:\n  - name: acme\n", CurrentSchemaVersion)
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// Every step from 0..CurrentSchemaVersion-1 must have a registered migration, so a
+// forgotten registration after a version bump is caught here, not at a real load.
+func TestSchemaMigrationChainComplete(t *testing.T) {
+	for v := 0; v < CurrentSchemaVersion; v++ {
+		if _, ok := configMigrations[v]; !ok {
+			t.Errorf("missing config migration from schemaVersion %d", v)
+		}
+	}
+	c := &Config{}
+	if err := c.migrate(); err != nil {
+		t.Fatalf("migrate from 0: %v", err)
+	}
+	if c.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("migrate left SchemaVersion = %d, want %d", c.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// A freshly written config (via srm init's path: Load then marshal) carries the
+// stamped schemaVersion, and that file loads back cleanly.
+func TestSchemaVersionPersistedOnWrite(t *testing.T) {
+	loaded, err := Load(filepath.Join(t.TempDir(), "absent.yaml")) // missing file → defaults
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("fresh config SchemaVersion = %d, want %d", loaded.SchemaVersion, CurrentSchemaVersion)
+	}
+	data, err := yaml.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "schemaVersion:") {
+		t.Fatalf("marshaled config omitted schemaVersion:\n%s", data)
+	}
+}
 
 // TestConfigRoundTrip ensures the yaml tags (used by `srm init` to write) and
 // the koanf tags (used by Load to read) agree, so a written config loads back
@@ -95,7 +177,7 @@ func TestResourcesFor(t *testing.T) {
 	}
 }
 
-// TestLoadResourcesYAML verifies a hand-written resources block loads via koanf —
+// TestLoadResourcesYAML verifies a hand-written resources block loads via koanf -
 // in particular that quoted numeric directives ("0", "4096") land in the string
 // fields (the documented format), and per-org overrides parse.
 func TestLoadResourcesYAML(t *testing.T) {
@@ -130,7 +212,7 @@ orgs:
 // TestResourcesForAuto verifies "auto" mode: the machine-relative percentage
 // defaults fill unset fields, an explicit host field overrides one auto value,
 // a per-org field overrides host+auto, and auto never yields IsZero (the fleet is
-// always bounded). Off mode (ResourceMode == "") is unaffected — see TestResourcesFor.
+// always bounded). Off mode (ResourceMode == "") is unaffected - see TestResourcesFor.
 func TestResourcesForAuto(t *testing.T) {
 	cfg := &Config{
 		ResourceMode: ResourceModeAuto,
@@ -202,7 +284,7 @@ func TestLoadResourceModeAuto(t *testing.T) {
 }
 
 // TestResourceModeValidation ensures a typo'd/case-variant resourceMode is
-// rejected at load — a silent fallthrough would leave the fleet UNBOUNDED while
+// rejected at load - a silent fallthrough would leave the fleet UNBOUNDED while
 // the operator believes it is capped.
 func TestResourceModeValidation(t *testing.T) {
 	load := func(yml string) error {
@@ -254,7 +336,7 @@ func TestHardeningConfig(t *testing.T) {
 	}
 }
 
-// TestSlug pins username normalization for the live org names — these feed the
+// TestSlug pins username normalization for the live org names - these feed the
 // per-org service username and must be valid lowercase Linux user names.
 func TestSlug(t *testing.T) {
 	for in, want := range map[string]string{
@@ -271,7 +353,7 @@ func TestSlug(t *testing.T) {
 
 // TestResolutionDefaultMode verifies that with isolation OFF (the default), the
 // per-org resolvers return the shared user verbatim and EMPTY cache roots, so the
-// orchestrator falls back to the historical shared paths — i.e. nothing changes.
+// orchestrator falls back to the historical shared paths - i.e. nothing changes.
 func TestResolutionDefaultMode(t *testing.T) {
 	cfg := &Config{RunnerUser: "srm", Orgs: []OrgConfig{{Name: "Acme"}, {Name: "Globex"}}}
 	for _, org := range []string{"Acme", "Globex"} {

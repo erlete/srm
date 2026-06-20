@@ -8,7 +8,7 @@ import (
 
 // ResourceSettings is the editable cgroup-capacity policy surfaced by the TUI
 // Settings panel: the mode, the host-wide per-runner caps, and the aggregate
-// slice ceiling. It mirrors the subset of config a user tunes for OOM safety —
+// slice ceiling. It mirrors the subset of config a user tunes for OOM safety -
 // the rest of the config (orgs, auth, install roots) is left untouched.
 type ResourceSettings struct {
 	Mode      string                // "" (manual/off) or config.ResourceModeAuto
@@ -33,7 +33,7 @@ func (m *Manager) ResourceSettings() ResourceSettings {
 // can't silently leave jobs unbounded on the next load (mirrors config.Load).
 func (m *Manager) ApplyResourceSettings(s ResourceSettings) error {
 	if s.Mode != "" && s.Mode != config.ResourceModeAuto {
-		return fmt.Errorf("invalid resource mode %q — use %q or empty", s.Mode, config.ResourceModeAuto)
+		return fmt.Errorf("invalid resource mode %q - use %q or empty", s.Mode, config.ResourceModeAuto)
 	}
 	m.cfg.ResourceMode = s.Mode
 	m.cfg.Resources = s.Resources

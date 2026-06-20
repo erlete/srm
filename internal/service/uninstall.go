@@ -14,7 +14,7 @@ import (
 )
 
 // UninstallOpts controls a host uninstall. The zero value (Org "", all Keep*
-// false) is a full host purge that LEAVES /etc/srm in place — secrets are removed
+// false) is a full host purge that LEAVES /etc/srm in place - secrets are removed
 // only with Purge.
 type UninstallOpts struct {
 	Org        string // "" = full host purge across every configured org
@@ -102,7 +102,7 @@ func (m *Manager) Uninstall(ctx context.Context, opts UninstallOpts) (UninstallR
 	users, paths := m.uninstallBaseTargets(opts)
 	rep.Users, rep.Paths = users, paths
 	if opts.Org == "" && !m.cfg.Isolation.PerOrgUsers {
-		rep.Skipped = append(rep.Skipped, "shared tool cache "+config.DefaultToolCacheRoot+" (GitHub convention — left in place)")
+		rep.Skipped = append(rep.Skipped, "shared tool cache "+config.DefaultToolCacheRoot+" (GitHub convention - left in place)")
 	}
 
 	cfgDir := filepath.Dir(m.cfgPath)
@@ -116,7 +116,7 @@ func (m *Manager) Uninstall(ctx context.Context, opts UninstallOpts) (UninstallR
 	}
 
 	if m.cfg.DryRun {
-		return rep, nil // plan only — no drain check, no mutation, no GitHub
+		return rep, nil // plan only - no drain check, no mutation, no GitHub
 	}
 
 	// Drain gate: never tear down work in flight unless forced.
@@ -131,16 +131,16 @@ func (m *Manager) Uninstall(ctx context.Context, opts UninstallOpts) (UninstallR
 			}
 			for _, p := range persistent {
 				if errs[p.org] != nil {
-					return rep, fmt.Errorf("cannot confirm %s/%s is idle (GitHub list failed: %v) — re-run with --force or --keep-github", p.org, p.name, errs[p.org])
+					return rep, fmt.Errorf("cannot confirm %s/%s is idle (GitHub list failed: %v) - re-run with --force or --keep-github", p.org, p.name, errs[p.org])
 				}
 				if busy[p] {
-					return rep, fmt.Errorf("runner %s/%s is busy — drain it or re-run with --force", p.org, p.name)
+					return rep, fmt.Errorf("runner %s/%s is busy - drain it or re-run with --force", p.org, p.name)
 				}
 			}
 		}
 		for _, e := range ephem {
 			if m.orchestratorFor(e.org).PendingJIT(e.org, e.slot) != 0 {
-				return rep, fmt.Errorf("ephemeral slot %s/%s has a job in flight — wait or re-run with --force", e.org, e.slot)
+				return rep, fmt.Errorf("ephemeral slot %s/%s has a job in flight - wait or re-run with --force", e.org, e.slot)
 			}
 		}
 	}
@@ -187,7 +187,7 @@ func (m *Manager) Uninstall(ctx context.Context, opts UninstallOpts) (UninstallR
 		out := filepath.Join(backupDir, fmt.Sprintf("srm-config-%d.tar.gz", time.Now().Unix()))
 		path, berr := BackupConfigDir(cfgDir, out)
 		if berr != nil {
-			return rep, fmt.Errorf("aborting config purge — backup failed (App key would be unrecoverable): %w", berr)
+			return rep, fmt.Errorf("aborting config purge - backup failed (App key would be unrecoverable): %w", berr)
 		}
 		rep.BackupPath = path
 		if err := os.RemoveAll(cfgDir); err != nil {
@@ -195,7 +195,7 @@ func (m *Manager) Uninstall(ctx context.Context, opts UninstallOpts) (UninstallR
 			rep.ConfigDir = ""
 		}
 	}
-	// 5. Binary LAST — on Linux an unlinked running executable keeps running, so
+	// 5. Binary LAST - on Linux an unlinked running executable keeps running, so
 	//    this command finishes cleanly after removing itself.
 	if rep.Binary != "" {
 		if err := os.Remove(rep.Binary); err != nil {
@@ -239,7 +239,7 @@ func (m *Manager) uninstallBaseTargets(opts UninstallOpts) (users, paths []strin
 		} else {
 			addUser(cfg.RunnerUser)
 			addPath(config.DefaultCacheRoot) // shared dep cache is srm-private
-			// /opt/hostedtoolcache is a GitHub convention shared with other tooling —
+			// /opt/hostedtoolcache is a GitHub convention shared with other tooling -
 			// intentionally NOT removed (reported as skipped by the caller).
 		}
 		addPath(config.DefaultInstallRoot)

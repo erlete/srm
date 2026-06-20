@@ -26,7 +26,7 @@ type Inspection struct {
 
 // EphemeralInspection is the host-side health of one ephemeral slot lane. An
 // ephemeral slot is judged by host health ALONE (is the lane up and not
-// crash-looping) — never by whether a JIT registration currently exists on
+// crash-looping) - never by whether a JIT registration currently exists on
 // GitHub, because that churns every job.
 type EphemeralInspection struct {
 	UnitExists   bool  // a systemd unit file exists for this slot
@@ -49,7 +49,7 @@ type DiskStat struct {
 }
 
 // ListUnits returns the base names of every srm-managed runner systemd unit on
-// the host (actions.runner.<org>.<name>.service), orphans included. Host-global —
+// the host (actions.runner.<org>.<name>.service), orphans included. Host-global -
 // the receiver's installRoot is irrelevant.
 func (u *ubuntu) ListUnits(_ context.Context) ([]string, error) {
 	entries, err := os.ReadDir("/etc/systemd/system")
@@ -69,7 +69,7 @@ func (u *ubuntu) ListUnits(_ context.Context) ([]string, error) {
 // ListEphemeralUnits returns the base names of every ephemeral slot unit on the
 // host (actions.ephemeral.<org>.<slot>.service). Kept separate from ListUnits so
 // reconcile never joins these churning, JIT-registered lanes to the GitHub runner
-// list — their registration name changes every job, so a 1:1 join is impossible.
+// list - their registration name changes every job, so a 1:1 join is impossible.
 func (u *ubuntu) ListEphemeralUnits(_ context.Context) ([]string, error) {
 	entries, err := os.ReadDir("/etc/systemd/system")
 	if err != nil {
@@ -86,7 +86,7 @@ func (u *ubuntu) ListEphemeralUnits(_ context.Context) ([]string, error) {
 }
 
 // InspectEphemeral gathers host-side health for one ephemeral slot lane: unit
-// presence, active state, restart count (NRestarts — a crash-looping cycle shows
+// presence, active state, restart count (NRestarts - a crash-looping cycle shows
 // a climbing count), and cgroup memory. Deliberately does NOT consult GitHub.
 func (u *ubuntu) InspectEphemeral(ctx context.Context, org, slot string) EphemeralInspection {
 	svc := EphemeralSvcName(org, slot)
@@ -110,8 +110,8 @@ func (u *ubuntu) InspectEphemeral(ctx context.Context, org, slot string) Ephemer
 
 // Inspect gathers the host-side state of one runner. The drop-in conformance
 // check compares the on-disk drop-in against what renderDropIn would produce for
-// THIS orchestrator's options — so it flags missing cache env, missing resource
-// limits, or a wrong/absent User= (the conformance check for features 1–3).
+// THIS orchestrator's options - so it flags missing cache env, missing resource
+// limits, or a wrong/absent User= (the conformance check for features 1-3).
 func (u *ubuntu) Inspect(ctx context.Context, org, name string) Inspection {
 	svc := u.svcName(org, name)
 	insp := Inspection{MemPeakBytes: -1, MemMaxBytes: -1, MemCurBytes: -1, OOMKills: -1}
@@ -133,7 +133,7 @@ func (u *ubuntu) Inspect(ctx context.Context, org, name string) Inspection {
 // oomKills returns how many times the kernel OOM-killed a process in this unit's
 // cgroup over its lifetime (cgroup v2 memory.events oom_kill), resolving the
 // cgroup path from systemd. -1 if unavailable. This is DIRECT per-runner OOM
-// attribution — the smoking gun a peak-vs-cap comparison can only hint at.
+// attribution - the smoking gun a peak-vs-cap comparison can only hint at.
 func (u *ubuntu) oomKills(ctx context.Context, svc string) int64 {
 	cg := systemctlValue(ctx, svc, "ControlGroup")
 	if cg == "" {
@@ -161,7 +161,7 @@ func readOOMKill(path string) int64 {
 
 // SliceUsage reports the live memory and hard cap of the srm aggregate slice
 // (cgroup v2), or (-1, -1) when the slice cgroup doesn't exist (no auto-capacity
-// mode). The slice bounds ALL runners together — the real multi-job OOM guard.
+// mode). The slice bounds ALL runners together - the real multi-job OOM guard.
 func (u *ubuntu) SliceUsage(_ context.Context) (current, max int64) {
 	base := filepath.Join("/sys/fs/cgroup", AggregateSlice)
 	return readCgroupInt(filepath.Join(base, "memory.current")), readCgroupInt(filepath.Join(base, "memory.max"))

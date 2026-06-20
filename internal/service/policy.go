@@ -6,7 +6,7 @@ import (
 	"github.com/erlete/srm/internal/core"
 )
 
-// ValidateLabels enforces GitHub's 1–100 custom-label constraint for JIT
+// ValidateLabels enforces GitHub's 1-100 custom-label constraint for JIT
 // config generation.
 func ValidateLabels(labels []string) error {
 	if len(labels) < 1 {
@@ -24,7 +24,7 @@ func PublicRepoRisk(g core.Group) bool {
 	return g.AllowsPublic
 }
 
-// OfflineRunners filters a runner list to those GitHub shows as offline —
+// OfflineRunners filters a runner list to those GitHub shows as offline -
 // these never auto-prune for non-ephemeral runners, so they are the candidates
 // for bulk-delete-offline.
 func OfflineRunners(runners []core.Runner) []core.Runner {

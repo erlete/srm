@@ -9,7 +9,7 @@ import (
 )
 
 // toOrgConfig must trim whitespace, parse the numeric fields the form already
-// validated, and split the label CSV — the same conversion `srm init` and the
+// validated, and split the label CSV - the same conversion `srm init` and the
 // first-run wizard both rely on.
 func TestOrgFieldsToOrgConfig(t *testing.T) {
 	f := orgFields{
@@ -80,7 +80,7 @@ func TestUpsertOrg(t *testing.T) {
 	}
 }
 
-// writeConfig must produce a file config.Load reads back with the org intact —
+// writeConfig must produce a file config.Load reads back with the org intact -
 // the round-trip the wizard depends on before it reloads the manager.
 func TestWriteConfigRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.yaml")
@@ -106,7 +106,7 @@ func TestWriteConfigRoundTrip(t *testing.T) {
 	}
 }
 
-// ensureConfigured must be a pure no-op when orgs already exist — it must never
+// ensureConfigured must be a pure no-op when orgs already exist - it must never
 // trigger the interactive wizard on a configured host (which would block on a TTY).
 func TestEnsureConfiguredNoopWhenOrgsExist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
