@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-21
+
 ### Added
 - **Template versioning** - persistent drop-ins and ephemeral units now carry a
   `# srm-dropin-vN` / `# srm-ephemeral-vN` generation marker. `reconcile` compares
@@ -228,7 +230,8 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a
   persistent-runner concept.
 
-[Unreleased]: https://github.com/erlete/srm/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/erlete/srm/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/erlete/srm/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/erlete/srm/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/erlete/srm/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/erlete/srm/compare/v1.0.0...v1.1.0
