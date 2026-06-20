@@ -62,7 +62,14 @@ if [ ! -w "$BINDIR" ] && [ "$(id -u)" -ne 0 ]; then
   sudo="sudo"
 fi
 $sudo install -d "$BINDIR"
-$sudo install -m 0755 "$tmp/srm" "$BINDIR/srm"
+# Stage in the target dir, keep the prior binary for rollback, then swap by
+# atomic rename. An in-place overwrite could hit "text file busy" or be read
+# half-written by a concurrently exec'ing srm (every ephemeral lane re-execs
+# /usr/local/bin/srm each job cycle); rename(2) is atomic and leaves running
+# processes on the old inode.
+$sudo install -m 0755 "$tmp/srm" "$BINDIR/.srm.new"
+if [ -e "$BINDIR/srm" ]; then $sudo cp -p "$BINDIR/srm" "$BINDIR/srm.prev"; fi
+$sudo mv -f "$BINDIR/.srm.new" "$BINDIR/srm"
 
 installed=$("$BINDIR/srm" version 2>/dev/null || echo "srm")
 echo "srm-install: installed $installed to $BINDIR/srm"
