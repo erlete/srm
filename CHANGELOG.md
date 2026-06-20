@@ -6,7 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Lifecycle, onboarding, and UX work toward **1.1.0** (additive — existing configs
+## [1.1.0] — 2026-06-20
+
+Lifecycle, onboarding, and UX additions (backward-compatible — existing configs
 and hosts keep working untouched).
 
 ### Added
@@ -190,5 +192,6 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a
   persistent-runner concept.
 
-[Unreleased]: https://github.com/erlete/srm/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/erlete/srm/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/erlete/srm/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/erlete/srm/releases/tag/v1.0.0
