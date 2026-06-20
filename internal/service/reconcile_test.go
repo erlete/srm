@@ -1,6 +1,60 @@
 package service
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/erlete/srm/internal/runner"
+)
+
+// TestClassifyPersistent locks the ORDER-SENSITIVE drift classification, above all
+// the safety invariant that a NEWER-generation drop-in is authoritative-skipped
+// (ClassDropInNewer) rather than refreshed back down - even though it also fails
+// conformance (DropInOK=false) and may be inactive. A reorder of the switch would
+// silently reintroduce the mixed-version ping-pong this guards against.
+func TestClassifyPersistent(t *testing.T) {
+	cases := []struct {
+		name                 string
+		insp                 runner.Inspection
+		on, listedOK, online bool
+		want                 string
+	}{
+		{"unknown: not on github + org list failed", runner.Inspection{HasTree: true}, false, false, false, ClassUnknown},
+		{"orphan: not on github", runner.Inspection{HasTree: true}, false, true, false, ClassOrphanUnit},
+		{"legacy flat tree", runner.Inspection{HasFlatTree: true, HasTree: false}, true, true, false, ClassLegacyFlat},
+		{"NEWER marker wins over stale+inactive", runner.Inspection{HasTree: true, DropInNewer: true, DropInOK: false, DropInVer: 99, Active: false}, true, true, false, ClassDropInNewer},
+		{"stale: older/non-conformant drop-in", runner.Inspection{HasTree: true, DropInOK: false}, true, true, true, ClassStaleDropIn},
+		{"stuck: conformant but inactive", runner.Inspection{HasTree: true, DropInOK: true, Active: false}, true, true, true, ClassStuck},
+		{"stuck: active but offline", runner.Inspection{HasTree: true, DropInOK: true, Active: true}, true, true, false, ClassStuck},
+		{"healthy", runner.Inspection{HasTree: true, DropInOK: true, Active: true}, true, true, true, ClassHealthy},
+	}
+	for _, c := range cases {
+		if got, _ := classifyPersistent(c.insp, c.on, c.listedOK, c.online); got != c.want {
+			t.Errorf("%s: classifyPersistent = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestClassifyEphemeral locks the ephemeral classification order, including that
+// UnitNewer is authoritative-skipped before the inactive/drift cases (mirroring the
+// persistent path).
+func TestClassifyEphemeral(t *testing.T) {
+	cases := []struct {
+		name string
+		insp runner.EphemeralInspection
+		want string
+	}{
+		{"healthy active lane", runner.EphemeralInspection{Active: true, Restarts: 0, UnitOK: true}, ClassEphemeralSlot},
+		{"NEWER marker wins over inactive/drift", runner.EphemeralInspection{Active: false, UnitNewer: true, UnitOK: false, UnitVer: 99}, ClassEphemeralNewer},
+		{"inactive", runner.EphemeralInspection{Active: false, UnitOK: true}, ClassEphemeralStuck},
+		{"drifted: older/non-conformant", runner.EphemeralInspection{Active: true, UnitOK: false}, ClassEphemeralStuck},
+		{"crash-looping", runner.EphemeralInspection{Active: true, UnitOK: true, Restarts: EphemeralRestartThreshold + 1}, ClassEphemeralStuck},
+	}
+	for _, c := range cases {
+		if got, _ := classifyEphemeral(c.insp); got != c.want {
+			t.Errorf("%s: classifyEphemeral = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
 
 // TestParseUnitName covers the systemd-unit → (org, name) split that drives orphan
 // detection, including the live orphan units and prefix-collision safety.

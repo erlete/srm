@@ -1,11 +1,116 @@
 package runner
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/erlete/srm/internal/config"
 )
+
+// TestTemplateVersionMarkers pins the template-generation markers. renderDropIn and
+// renderEphemeralUnit must stamp a marker that matches the version const, so a body
+// change that bumps the const but not the comment (or vice versa) fails here, and
+// unitVersion must parse it back. The marker is what lets reconcile arbitrate
+// generations across a mixed-version fleet without thrashing.
+func TestTemplateVersionMarkers(t *testing.T) {
+	d := renderDropIn(Options{ToolCache: "/t", CacheRoot: "/c"})
+	if want := fmt.Sprintf("# srm-dropin-v%d\n", CurrentDropInVersion); !strings.Contains(d, want) {
+		t.Errorf("drop-in missing marker %q:\n%s", want, d)
+	}
+	if got := unitVersion(d, "dropin"); got != CurrentDropInVersion {
+		t.Errorf("unitVersion(dropin) = %d, want %d", got, CurrentDropInVersion)
+	}
+	if !strings.HasPrefix(d, "[Service]\n") { // marker is a comment AFTER [Service]
+		t.Errorf("drop-in must still start with [Service]:\n%s", d)
+	}
+
+	e := renderEphemeralUnit(Options{SelfExe: "/s"}, "o", "1", "/d")
+	if want := fmt.Sprintf("# srm-ephemeral-v%d\n", CurrentEphemeralVersion); !strings.Contains(e, want) {
+		t.Errorf("ephemeral unit missing marker %q:\n%s", want, e)
+	}
+	if got := unitVersion(e, "ephemeral"); got != CurrentEphemeralVersion {
+		t.Errorf("unitVersion(ephemeral) = %d, want %d", got, CurrentEphemeralVersion)
+	}
+	if got := unitVersion(e, "dropin"); got != 0 {
+		t.Errorf("ephemeral marker must not be read as a dropin marker, got %d", got)
+	}
+}
+
+// TestUnitVersionParsing covers the marker parser's edge cases, including the
+// authority-relevant malformed inputs (negative, overflow, leading zero, duplicate)
+// that must resolve to a safe value rather than a spurious version.
+func TestUnitVersionParsing(t *testing.T) {
+	cases := []struct {
+		in, kind string
+		want     int
+	}{
+		{"[Service]\n# srm-dropin-v1\nProtectHome=true\n", "dropin", 1},
+		{"[Service]\n# srm-dropin-v7\n", "dropin", 7},
+		{"[Service]\nProtectHome=true\n", "dropin", 0},          // absent => pre-versioning (v0)
+		{"# srm-ephemeral-v2\nNoNewPrivileges=true\n", "ephemeral", 2},
+		{"# srm-dropin-vX\n", "dropin", 0},                      // non-numeric => 0
+		{"  # srm-dropin-v3  \n", "dropin", 3},                  // tolerant of surrounding space
+		{"# srm-dropin-v-1\n", "dropin", 0},                     // negative => invalid => 0
+		{"# srm-dropin-v99999999999999999999\n", "dropin", 0},   // overflow => 0
+		{"# srm-dropin-v01\n", "dropin", 1},                     // leading zero => 1
+		{"# srm-dropin-v2\n# srm-dropin-v5\n", "dropin", 2},     // duplicate => first wins (safe: too-low only forces a forward re-render)
+	}
+	for _, c := range cases {
+		if got := unitVersion(c.in, c.kind); got != c.want {
+			t.Errorf("unitVersion(%q, %q) = %d, want %d", c.in, c.kind, got, c.want)
+		}
+	}
+}
+
+// TestStripMarker verifies the marker line is removed for body comparison, so a
+// markerless v0 field unit and the current render compare equal once stripped (the
+// fix that stops an upgrade from flagging every existing unit as drift).
+func TestStripMarker(t *testing.T) {
+	withMarker := "[Service]\n# srm-dropin-v1\nProtectHome=true\n"
+	without := "[Service]\nProtectHome=true\n"
+	if got := stripMarker(withMarker, "dropin"); got != without {
+		t.Errorf("stripMarker did not remove the marker line: %q", got)
+	}
+	if got := stripMarker(without, "dropin"); got != without {
+		t.Errorf("stripMarker altered a markerless body: %q", got)
+	}
+	if stripMarker(withMarker, "dropin") != stripMarker(without, "dropin") {
+		t.Error("a v1-marked and a markerless copy of the same body must strip equal")
+	}
+}
+
+// TestTemplateConformance pins the marker-authority arithmetic reconcile relies on,
+// using a FIXED current version (decoupled from the live const so an intermediate
+// 'older but present' generation is distinct from absent/v0). bodyMatch is the
+// marker-stripped body comparison. Covers the newer (authoritative-skip) path that
+// can't be exercised on a live host, and the v0-body-match path that must NOT alarm
+// on a fleet upgrade.
+func TestTemplateConformance(t *testing.T) {
+	const cur = 3
+	cases := []struct {
+		name              string
+		onDisk            int
+		bodyMatch         bool
+		wantOK, wantNewer bool
+	}{
+		{"equal + body match => conformant", cur, true, true, false},
+		{"equal + body differs => stale", cur, false, false, false},
+		{"older present + body differs => stale (forward bump)", cur - 1, false, false, false},
+		{"older present + body match => conformant (marker is cosmetic)", cur - 1, true, true, false},
+		{"absent v0 + body match => conformant (no false alarm on upgrade)", 0, true, true, false},
+		{"absent v0 + body differs => stale", 0, false, false, false},
+		{"newer => authoritative-skip", cur + 1, true, false, true},
+		{"newer + body differs => still skip", cur + 1, false, false, true},
+	}
+	for _, c := range cases {
+		ok, newer := templateConformance(c.onDisk, cur, c.bodyMatch)
+		if ok != c.wantOK || newer != c.wantNewer {
+			t.Errorf("%s: templateConformance(%d,%d,%v) = (ok=%v,newer=%v), want (ok=%v,newer=%v)",
+				c.name, c.onDisk, cur, c.bodyMatch, ok, newer, c.wantOK, c.wantNewer)
+		}
+	}
+}
 
 // TestRenderDropIn pins the drop-in contract. renderDropIn is the single source
 // of truth that writeHardening writes and reconcile will diff against, so its
@@ -50,6 +155,46 @@ func TestRenderDropIn(t *testing.T) {
 	// No slice configured → no Slice= directive (default placement unchanged).
 	if strings.Contains(got, "Slice=") {
 		t.Errorf("default-mode drop-in must not contain Slice=:\n%s", got)
+	}
+}
+
+// TestRenderDropInGolden pins the EXACT bytes of the canonical drop-in. Unlike the
+// Contains-based checks, this trips on ANY body change - which is the point: if you
+// intentionally change the rendered body, update this golden AND bump
+// CurrentDropInVersion (and its "# srm-dropin-vN" marker), so a mixed-version fleet
+// recognizes the new generation. The byte-equality drift check depends on this body
+// staying deterministic.
+func TestRenderDropInGolden(t *testing.T) {
+	const golden = `[Service]
+# srm-dropin-v1
+# Managed by srm. Defense-in-depth hardening that is safe for general CI.
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+LockPersonality=true
+RestrictRealtime=true
+# Stricter, opt-in (break sudo/apt - enable only if your jobs never need them):
+#   NoNewPrivileges=true
+#   ProtectSystem=strict
+#   ReadWritePaths=<runner dir>
+#   RestrictSUIDSGID=true
+Environment=AGENT_TOOLSDIRECTORY=/tc
+Environment=npm_config_cache=/cr/npm
+Environment=npm_config_store_dir=/cr/pnpm
+Environment=YARN_CACHE_FOLDER=/cr/yarn
+Environment=PIP_CACHE_DIR=/cr/pip
+Environment=GOMODCACHE=/cr/go/mod
+Environment=GOCACHE=/cr/go/build
+Environment=CARGO_HOME=/cr/cargo
+Environment=GRADLE_USER_HOME=/cr/gradle
+`
+	if got := renderDropIn(Options{ToolCache: "/tc", CacheRoot: "/cr"}); got != golden {
+		t.Errorf("drop-in body changed without updating the golden.\nIf intentional, update this golden AND bump CurrentDropInVersion.\n--- got ---\n%s\n--- want ---\n%s", got, golden)
 	}
 }
 

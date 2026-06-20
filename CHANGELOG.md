@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-21
+
+### Added
+- **Template versioning** - persistent drop-ins and ephemeral units now carry a
+  `# srm-dropin-vN` / `# srm-ephemeral-vN` generation marker. `reconcile` compares
+  it before byte-equality: an older or absent marker is a forward bump this srm
+  owns (`refresh` re-renders and stamps it), an equal marker falls through to the
+  existing conformance check, and a *newer* marker is authoritative-skipped (new
+  `dropin-newer` / `ephemeral-newer` classes) so a mixed-version fleet converges
+  upward instead of two hosts rewriting each other's units. The marker is compared
+  ignoring its own comment line, so existing markerless units upgrade seamlessly:
+  they read as conformant (no drift churn, no restarts) and pick up the marker on
+  their next real template change or recreate. The control-plane groundwork for
+  staged progressive updates.
+
 ## [1.2.1] - 2026-06-21
 
 ### Fixed
@@ -215,7 +230,8 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a
   persistent-runner concept.
 
-[Unreleased]: https://github.com/erlete/srm/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/erlete/srm/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/erlete/srm/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/erlete/srm/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/erlete/srm/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/erlete/srm/compare/v1.0.0...v1.1.0

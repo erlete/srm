@@ -17,7 +17,9 @@ type Inspection struct {
 	User         string // the unit's effective User= ("" = root/unset)
 	HasTree      bool   // the install tree (config.sh) is present at the namespaced path
 	HasFlatTree  bool   // an install tree exists at the legacy flat path {installRoot}/{name}
-	DropInOK     bool   // the on-disk drop-in matches the expected (renderDropIn) content
+	DropInOK     bool   // the on-disk drop-in matches the expected (renderDropIn) content AND template generation
+	DropInVer    int    // the on-disk drop-in's "# srm-dropin-vN" marker (0 = absent / pre-versioning)
+	DropInNewer  bool   // the on-disk drop-in carries a NEWER template generation than this binary (authoritative-skip)
 	MemPeakBytes int64  // cgroup memory peak, or -1 if unknown
 	MemMaxBytes  int64  // cgroup memory hard cap, or -1 = unlimited/unknown
 	MemCurBytes  int64  // cgroup live memory (MemoryCurrent), or -1 if unknown
@@ -32,7 +34,9 @@ type EphemeralInspection struct {
 	UnitExists   bool  // a systemd unit file exists for this slot
 	Active       bool  // the lane is active (between or during a job)
 	Restarts     int   // systemd NRestarts; a high count means the cycle is crash-looping
-	UnitOK       bool  // the on-disk unit matches the expected (renderEphemeralUnit) content
+	UnitOK       bool  // the on-disk unit matches the expected (renderEphemeralUnit) content AND template generation
+	UnitVer      int   // the on-disk unit's "# srm-ephemeral-vN" marker (0 = absent / pre-versioning)
+	UnitNewer    bool  // the on-disk unit carries a NEWER template generation than this binary (authoritative-skip)
 	MemPeakBytes int64 // cgroup memory peak, or -1 if unknown
 	MemMaxBytes  int64 // cgroup memory hard cap, or -1 = unlimited/unknown
 	MemCurBytes  int64 // cgroup live memory (MemoryCurrent), or -1 if unknown
@@ -99,7 +103,11 @@ func (u *ubuntu) InspectEphemeral(ctx context.Context, org, slot string) Ephemer
 	// Drop-in conformance: the on-disk unit vs what we would write now (cache env,
 	// caps, hardening, ExecStart). A mismatch is drift to report (e.g. caps changed).
 	if b, err := os.ReadFile(filepath.Join("/etc/systemd/system", svc)); err == nil {
-		insp.UnitOK = string(b) == renderEphemeralUnit(u.opts, org, slot, u.ephemeralSlotDir(org, slot))
+		cur := string(b)
+		insp.UnitVer = unitVersion(cur, "ephemeral")
+		want := renderEphemeralUnit(u.opts, org, slot, u.ephemeralSlotDir(org, slot))
+		body := stripMarker(cur, "ephemeral") == stripMarker(want, "ephemeral")
+		insp.UnitOK, insp.UnitNewer = templateConformance(insp.UnitVer, CurrentEphemeralVersion, body)
 	}
 	insp.MemPeakBytes = parseBytes(systemctlValue(ctx, svc, "MemoryPeak"))
 	insp.MemMaxBytes = parseBytes(systemctlValue(ctx, svc, "MemoryMax"))
@@ -121,7 +129,9 @@ func (u *ubuntu) Inspect(ctx context.Context, org, name string) Inspection {
 	insp.HasTree = fileExists(filepath.Join(u.runnerDir(org, name), "config.sh"))
 	insp.HasFlatTree = fileExists(filepath.Join(u.installRoot, name, "config.sh"))
 	if cur, ok := u.currentDropIn(svc); ok {
-		insp.DropInOK = cur == renderDropIn(u.opts)
+		insp.DropInVer = unitVersion(cur, "dropin")
+		body := stripMarker(cur, "dropin") == stripMarker(renderDropIn(u.opts), "dropin")
+		insp.DropInOK, insp.DropInNewer = templateConformance(insp.DropInVer, CurrentDropInVersion, body)
 	}
 	insp.MemPeakBytes = parseBytes(systemctlValue(ctx, svc, "MemoryPeak"))
 	insp.MemMaxBytes = parseBytes(systemctlValue(ctx, svc, "MemoryMax"))
@@ -179,6 +189,59 @@ func readCgroupInt(path string) int64 {
 		return -1
 	}
 	return n
+}
+
+// templateConformance compares an on-disk unit against the generation THIS binary
+// renders. bodyMatch is whether the two match IGNORING the version-marker line
+// (see stripMarker), so the marker - a non-functional comment - is never drift on
+// its own. ok = a functionally-current body from a not-newer binary
+// (healthy/conformant); crucially a markerless v0/field unit whose body already
+// matches is ok, so upgrading an existing fleet does NOT alarm or force a restart
+// to merely stamp the comment. newer = the on-disk generation is AHEAD of this
+// binary, so reconcile must authoritative-skip it (never rewrite a newer host's
+// unit down). Neither ok nor newer => a real body drift this binary owns (refresh
+// re-renders and stamps the current marker; a genuine generation bump that changed
+// the body lands here too, since bodyMatch is then false).
+func templateConformance(onDiskVer, currentVer int, bodyMatch bool) (ok, newer bool) {
+	newer = onDiskVer > currentVer
+	return !newer && bodyMatch, newer
+}
+
+// unitVersion extracts srm's template-generation marker ("# srm-<kind>-vN", kind
+// "dropin" or "ephemeral") from a rendered drop-in or unit, returning 0 when the
+// marker is absent (a pre-versioning / field install) or malformed. A negative or
+// non-numeric value is treated as absent (0); a forged duplicate marker resolves
+// first-wins, which is safe because a too-low value only triggers a conservative
+// forward re-render. The marker is a totally-ordered integer reconcile uses to
+// arbitrate template generations across a mixed-version fleet without thrashing.
+func unitVersion(s, kind string) int {
+	marker := "# srm-" + kind + "-v"
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if rest, ok := strings.CutPrefix(line, marker); ok {
+			if n, err := strconv.Atoi(rest); err == nil && n >= 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// stripMarker returns s with its srm template-generation marker line removed, so a
+// body comparison ignores the version comment. The marker exists for
+// cross-generation authority, not to make an otherwise-current unit read as drift:
+// a markerless v0 field unit and the current render compare equal once stripped.
+func stripMarker(s, kind string) string {
+	marker := "# srm-" + kind + "-v"
+	lines := strings.Split(s, "\n")
+	out := lines[:0]
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), marker) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
 
 // currentDropIn reads the on-disk hardening drop-in for a unit.
