@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,87 @@ import (
 
 	"github.com/erlete/srm/internal/core"
 )
+
+// A pre-versioning (no schemaVersion) config must load and be adopted as the
+// current schema generation — existing v1.0/v1.1 configs keep working untouched.
+func TestSchemaVersionStampsLegacy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("orgs:\n  - name: acme\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("load legacy config: %v", err)
+	}
+	if got.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("legacy SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// A config written by a NEWER srm must be refused, not loaded — koanf would
+// otherwise silently drop the keys this binary doesn't know.
+func TestSchemaVersionRejectsNewer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yml := fmt.Sprintf("schemaVersion: %d\norgs:\n  - name: acme\n", CurrentSchemaVersion+1)
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected Load to reject a newer schemaVersion")
+	}
+}
+
+// A current-version config round-trips at the same version (no spurious migration).
+func TestSchemaVersionRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yml := fmt.Sprintf("schemaVersion: %d\norgs:\n  - name: acme\n", CurrentSchemaVersion)
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// Every step from 0..CurrentSchemaVersion-1 must have a registered migration, so a
+// forgotten registration after a version bump is caught here, not at a real load.
+func TestSchemaMigrationChainComplete(t *testing.T) {
+	for v := 0; v < CurrentSchemaVersion; v++ {
+		if _, ok := configMigrations[v]; !ok {
+			t.Errorf("missing config migration from schemaVersion %d", v)
+		}
+	}
+	c := &Config{}
+	if err := c.migrate(); err != nil {
+		t.Fatalf("migrate from 0: %v", err)
+	}
+	if c.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("migrate left SchemaVersion = %d, want %d", c.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// A freshly written config (via srm init's path: Load then marshal) carries the
+// stamped schemaVersion, and that file loads back cleanly.
+func TestSchemaVersionPersistedOnWrite(t *testing.T) {
+	loaded, err := Load(filepath.Join(t.TempDir(), "absent.yaml")) // missing file → defaults
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("fresh config SchemaVersion = %d, want %d", loaded.SchemaVersion, CurrentSchemaVersion)
+	}
+	data, err := yaml.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "schemaVersion:") {
+		t.Fatalf("marshaled config omitted schemaVersion:\n%s", data)
+	}
+}
 
 // TestConfigRoundTrip ensures the yaml tags (used by `srm init` to write) and
 // the koanf tags (used by Load to read) agree, so a written config loads back

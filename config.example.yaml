@@ -11,6 +11,12 @@
 # reference it via privateKeyPath, or import it into the encrypted secrets store
 # (set SRM_SECRETS_PASSPHRASE and accept the prompt in `srm init`).
 
+# Config-schema generation this file targets. srm stamps it (and `srm init`
+# writes it); srm migrates an older value forward on load and REFUSES a file from
+# a newer srm so unknown keys aren't silently dropped. Omit it in a hand-written
+# file and srm adopts the current version on first load.
+schemaVersion: 1
+
 # Bulk-operation fan-out (kept well under GitHub's 100-concurrent secondary limit).
 concurrency: 8
 

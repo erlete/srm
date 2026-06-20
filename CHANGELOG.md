@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Config **`schemaVersion`** — the config file now carries a schema generation that
+  srm stamps and migrates forward on load. A config written by a *newer* srm is
+  refused rather than silently lossy-loaded (koanf drops unknown keys). The
+  control-plane foundation for progressive in-place updates; existing unversioned
+  configs are adopted automatically.
+
 ## [1.1.0] — 2026-06-20
 
 Lifecycle, onboarding, and UX additions (backward-compatible — existing configs

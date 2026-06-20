@@ -15,6 +15,7 @@ Invalid `resourceMode` and isolation user collisions are rejected at load.
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
+| `schemaVersion` | int | current | Config-schema generation, stamped by srm. Migrated forward on load; a value newer than this srm understands is refused (so unknown keys aren't silently dropped). Usually omitted in hand-written files. |
 | `orgs` | list | — (required) | The organizations srm manages. See [Org](#org-orgs). |
 | `concurrency` | int | small | Bulk-op fan-out (kept < 100). |
 | `runnerVersion` | string | — | Pinned default actions-runner release (e.g. `"2.335.1"`). |

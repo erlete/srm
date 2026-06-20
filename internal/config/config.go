@@ -207,6 +207,13 @@ func (c *Config) ToolCacheFor(org string) string {
 
 // Config is the fully-resolved tool configuration.
 type Config struct {
+	// SchemaVersion is the config-schema generation this file was written for.
+	// Load stamps it (migrating an older/unstamped file forward) and refuses a file
+	// from a NEWER srm — without it koanf would silently drop keys this binary
+	// doesn't know, discarding an operator's configuration. 0/absent = a
+	// pre-versioning (legacy) file, adopted as v1 on load. See CurrentSchemaVersion.
+	SchemaVersion int `koanf:"schemaVersion" yaml:"schemaVersion,omitempty"`
+
 	Orgs          []OrgConfig `koanf:"orgs" yaml:"orgs"`
 	DryRun        bool        `koanf:"dryRun" yaml:"dryRun"`
 	Concurrency   int         `koanf:"concurrency" yaml:"concurrency"`     // bulk-op fan-out, kept < 100
@@ -307,7 +314,47 @@ func defaults() *Config {
 		Concurrency:   8,
 		RunnerVersion: DefaultRunnerVersion,
 		RunnerUser:    DefaultRunnerUser,
+		// SchemaVersion is intentionally left 0 so a loaded file's absent/legacy
+		// value stays 0 and migrate() can adopt it; a fresh (missing-file) config is
+		// likewise stamped to current by migrate().
 	}
+}
+
+// CurrentSchemaVersion is the config-schema generation this srm writes and
+// understands. Bump it whenever the on-disk config shape changes in a way an older
+// srm couldn't read, and register a migration FROM the previous version in
+// configMigrations. This is the control-plane half of progressive updates: it lets
+// a newer srm migrate an older config forward and refuse a config from a newer srm.
+const CurrentSchemaVersion = 1
+
+// configMigrations upgrades a Config in place FROM the keyed schema version to the
+// next. Every step in [0, CurrentSchemaVersion) MUST have an entry — migrate()
+// errors loudly otherwise, so a forgotten registration after a version bump is
+// caught by TestSchemaMigrationChainComplete rather than at a real load. Each
+// migration is a pure, idempotent in-memory transform.
+var configMigrations = map[int]func(*Config){
+	// 0 (pre-versioning / unstamped) -> 1: the v1.0/v1.1 config shape already IS
+	// schema v1, so adoption is a structural no-op — migrate() just stamps it.
+	0: func(*Config) {},
+}
+
+// migrate brings a just-loaded config up to CurrentSchemaVersion, or refuses it. A
+// config from a NEWER srm (schemaVersion > current) is rejected rather than loaded:
+// koanf silently drops unknown keys, so loading it would discard configuration the
+// operator wrote — and a later SaveConfig would persist the lossy copy.
+func (c *Config) migrate() error {
+	if c.SchemaVersion > CurrentSchemaVersion {
+		return fmt.Errorf("config schemaVersion %d is newer than this srm understands (%d) — upgrade srm; refusing to load so unknown keys aren't silently dropped", c.SchemaVersion, CurrentSchemaVersion)
+	}
+	for c.SchemaVersion < CurrentSchemaVersion {
+		m, ok := configMigrations[c.SchemaVersion]
+		if !ok {
+			return fmt.Errorf("no config migration registered from schemaVersion %d (srm bug)", c.SchemaVersion)
+		}
+		m(c)
+		c.SchemaVersion++
+	}
+	return nil
 }
 
 // Load reads and validates configuration from a YAML file. A missing file is
@@ -325,6 +372,12 @@ func Load(path string) (*Config, error) {
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("stat config %s: %w", path, err)
+	}
+
+	// Bring the schema up to date (or refuse a too-new file) before interpreting
+	// any other field.
+	if err := cfg.migrate(); err != nil {
+		return nil, err
 	}
 
 	if cfg.Concurrency <= 0 {
