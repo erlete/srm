@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-06-21
+
+### Fixed
+- Installer (`install.sh`) now stages the binary and swaps it by **atomic rename**,
+  keeping the prior binary as `srm.prev`. An in-place overwrite could hit "text
+  file busy" or be read half-written when upgrading a host where srm is actively
+  exec'd (every ephemeral lane re-execs it each job cycle).
+
 ## [1.2.0] - 2026-06-21
 
 ### Added
@@ -207,7 +215,8 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a
   persistent-runner concept.
 
-[Unreleased]: https://github.com/erlete/srm/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/erlete/srm/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/erlete/srm/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/erlete/srm/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/erlete/srm/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/erlete/srm/releases/tag/v1.0.0
