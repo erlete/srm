@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
@@ -44,7 +45,7 @@ func Execute(version string) error {
 	root.PersistentFlags().StringVar(&flagOrg, "org", "", "operate on a single org (default: all configured orgs where applicable)")
 	root.PersistentFlags().BoolVar(&flagDryRun, "dry-run", false, "preview mutations without calling GitHub")
 
-	root.AddCommand(newInitCmd(), newRunnersCmd(), newGroupsCmd(), newProvisionCmd(), newDoctorCmd(), newCacheCmd(), newReconcileCmd(), newRunnerCycleCmd(), newVersionCmd(version))
+	root.AddCommand(newInitCmd(), newRunnersCmd(), newGroupsCmd(), newProvisionCmd(), newDoctorCmd(), newCacheCmd(), newReconcileCmd(), newRunnerCycleCmd(), newBackupCmd(), newRestoreCmd(), newUninstallCmd(), newVersionCmd(version))
 	return root.Execute()
 }
 
@@ -170,6 +171,12 @@ func resolveSecrets() secrets.Store {
 }
 
 func runTUI() error {
+	// First run: guide the user through configuring an org so they never have to
+	// hand-edit config.yaml. ensureConfigured is a no-op once any org exists.
+	if err := ensureConfigured(); err != nil {
+		return err
+	}
+
 	mgr, closeLog, err := buildManager()
 	if err != nil {
 		return err
@@ -177,10 +184,61 @@ func runTUI() error {
 	defer closeLog()
 
 	if len(mgr.OrgNames()) == 0 {
-		return noOrgsError()
+		// Setup was cancelled (or wrote nothing); ensureConfigured already printed
+		// the guidance, so just exit quietly rather than launching an empty TUI.
+		return nil
 	}
 
 	p := tea.NewProgram(tui.New(context.Background(), mgr))
 	_, err = p.Run()
+	return err
+}
+
+// ensureConfigured runs the guided first-run wizard when no orgs are configured
+// and a fresh setup is possible here; it is a no-op once orgs exist. An unreadable
+// config (e.g. the root-only system file accessed as a non-root user) steers to
+// the sudo hint instead of a wizard that couldn't persist anyway.
+func ensureConfigured() error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return noOrgsError()
+		}
+		return err
+	}
+	if len(cfg.OrgNames()) > 0 {
+		return nil
+	}
+	if !firstRunEligible() {
+		return noOrgsError()
+	}
+	return firstRunSetup()
+}
+
+// firstRunEligible reports whether a no-orgs situation is a genuine fresh install
+// we can guide and write — as opposed to a root-only system config we merely can't
+// read as a non-root user, where the right answer is "re-run with sudo". It is the
+// inverse of noOrgsError's sudo-hint condition.
+func firstRunEligible() bool {
+	if os.Geteuid() != 0 {
+		if _, err := os.Stat(systemConfigPath); err == nil || errors.Is(err, fs.ErrPermission) {
+			return false
+		}
+	}
+	return true
+}
+
+// validateOrgAuth confirms an org's GitHub App credentials actually authenticate
+// by listing its runners through a freshly built manager — so it reads the config
+// just written to disk. A nil error means auth is good (0 runners still counts).
+func validateOrgAuth(org string) error {
+	mgr, closeLog, err := buildManager()
+	if err != nil {
+		return err
+	}
+	defer closeLog()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, err = mgr.ListRunners(ctx, org)
 	return err
 }

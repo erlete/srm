@@ -1,0 +1,24 @@
+# Keeps dependencies current so pinned action SHAs and Go modules never drift
+# into deprecation or a known CVE. Bumps land as normal PRs and follow the same
+# squash-merge-to-stable rule as everything else (see CONTRIBUTING.md).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"] # one PR for all action bumps, not one each
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-deps:
+        patterns: ["*"]
+    commit-message:
+      prefix: build

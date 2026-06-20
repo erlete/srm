@@ -278,33 +278,37 @@ func (m *Manager) DestroyRunner(ctx context.Context, org, name string) error {
 		return err
 	}
 
-	runners, err := m.ListRunners(ctx, org)
-	if err != nil {
-		return err
-	}
-	var id int64
-	for _, r := range runners {
-		if r.Name == name {
-			id = r.ID
-			break
-		}
-	}
+	orch := m.orchestratorFor(org)
+	// Resolve the GitHub runner id from the agent's local .runner file BEFORE
+	// teardown removes the tree. Deregistering by this host-local id (never a name
+	// match across the whole org) guarantees we never delete another host's
+	// same-named runner. It also means host cleanup no longer depends on GitHub
+	// being reachable.
+	id, idErr := orch.AgentID(org, name)
+
 	if m.cfg.DryRun {
 		return nil
 	}
 
-	// Host cleanup first (best-effort), then authoritative API delete.
-	orch := m.orchestratorFor(org)
+	// Host cleanup first (best-effort), then the authoritative API delete by id.
 	hostErr := orch.RemoveRunner(ctx, name, org, "")
 
-	if id != 0 {
-		c, err := m.client(ctx, org)
-		if err != nil {
-			return err
+	if id == 0 {
+		// No host-local id to deregister by — do NOT fall back to a name lookup
+		// (it could resolve to another host's runner). Leave the GitHub-side
+		// registration for `srm reconcile` to surface and clean as an orphan.
+		if hostErr != nil {
+			return hostErr
 		}
-		if err := c.DeleteRunner(ctx, org, id); err != nil {
-			return err
-		}
+		return fmt.Errorf("removed host runner %q but could not read its GitHub id (%v); deregister it via `srm reconcile`", name, idErr)
+	}
+
+	c, err := m.client(ctx, org)
+	if err != nil {
+		return err
+	}
+	if err := c.DeleteRunner(ctx, org, id); err != nil {
+		return err
 	}
 	return hostErr
 }

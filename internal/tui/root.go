@@ -218,17 +218,16 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// The runners filter captures keystrokes while focused.
-	if m.tab == tabPersistent && m.runners.filtering() {
+	// The active view's filter captures keystrokes while focused.
+	if m.activeFiltering() {
 		switch {
 		case key.Matches(msg, m.keys.Esc):
-			m.runners.stopFilter(true)
+			m.stopFilter(true)
 		case key.Matches(msg, m.keys.Enter):
-			m.runners.stopFilter(false)
+			m.stopFilter(false)
 		default:
-			var cmd tea.Cmd
-			m.runners, cmd = m.runners.updateFilter(msg)
-			return m, cmd
+			nm, cmd := m.updateActiveFilter(msg)
+			return nm, cmd
 		}
 		return m, nil
 	}
@@ -277,10 +276,10 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		return m, m.loadCurrent()
 	case key.Matches(msg, m.keys.Filter):
-		if m.tab == tabPersistent {
-			return m, m.runners.startFilter()
+		if m.filterableTab() {
+			return m, m.startFilter()
 		}
-		m.status, m.stErr = "filter is available on the Persistent view", false
+		m.status, m.stErr = "filter is not available on this view", false
 		return m, nil
 	case key.Matches(msg, m.keys.New):
 		switch m.tab {
@@ -366,6 +365,79 @@ func (m Model) askDestroySlot() (tea.Model, tea.Cmd) {
 	m.onConfirm = func() tea.Cmd { return destroyEphemeralSlotCmd(m.ctx, m.mgr, s.Org, s.Slot) }
 	m.modalOpen = true
 	return m, nil
+}
+
+// filterableTab reports whether the active tab supports the incremental "/"
+// filter. Every list view does; Settings (a single snapshot) does not.
+func (m Model) filterableTab() bool {
+	switch m.tab {
+	case tabPersistent, tabEphemeral, tabGroups, tabHealth:
+		return true
+	default:
+		return false
+	}
+}
+
+// activeFiltering reports whether the active tab's filter input is focused.
+func (m Model) activeFiltering() bool {
+	switch m.tab {
+	case tabPersistent:
+		return m.runners.filtering()
+	case tabEphemeral:
+		return m.ephemeral.filtering()
+	case tabGroups:
+		return m.groups.filtering()
+	case tabHealth:
+		return m.health.filtering()
+	default:
+		return false
+	}
+}
+
+// startFilter focuses the active tab's filter input.
+func (m *Model) startFilter() tea.Cmd {
+	switch m.tab {
+	case tabPersistent:
+		return m.runners.startFilter()
+	case tabEphemeral:
+		return m.ephemeral.startFilter()
+	case tabGroups:
+		return m.groups.startFilter()
+	case tabHealth:
+		return m.health.startFilter()
+	default:
+		return nil
+	}
+}
+
+// stopFilter blurs the active tab's filter input (clear empties the query too).
+func (m *Model) stopFilter(clear bool) {
+	switch m.tab {
+	case tabPersistent:
+		m.runners.stopFilter(clear)
+	case tabEphemeral:
+		m.ephemeral.stopFilter(clear)
+	case tabGroups:
+		m.groups.stopFilter(clear)
+	case tabHealth:
+		m.health.stopFilter(clear)
+	}
+}
+
+// updateActiveFilter feeds a keystroke to the active tab's filter and re-filters.
+func (m Model) updateActiveFilter(msg tea.Msg) (Model, tea.Cmd) {
+	var cmd tea.Cmd
+	switch m.tab {
+	case tabPersistent:
+		m.runners, cmd = m.runners.updateFilter(msg)
+	case tabEphemeral:
+		m.ephemeral, cmd = m.ephemeral.updateFilter(msg)
+	case tabGroups:
+		m.groups, cmd = m.groups.updateFilter(msg)
+	case tabHealth:
+		m.health, cmd = m.health.updateFilter(msg)
+	}
+	return m, cmd
 }
 
 // updateForm drives the create wizard. On completion it kicks off the create
@@ -483,7 +555,7 @@ func (m *Model) layout() {
 	}
 	m.runners.setSize(m.width, bodyH-1)   // -1 for the detail line
 	m.ephemeral.setSize(m.width, bodyH-1) // detail line too
-	m.groups.setSize(m.width, bodyH)
+	m.groups.setSize(m.width, bodyH-1)    // detail line too
 	m.health.setSize(m.width, bodyH)
 	m.settings.setSize(m.width, bodyH)
 }

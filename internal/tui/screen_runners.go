@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/table"
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 
@@ -17,14 +16,13 @@ import (
 // runnersView is the runners inventory: a cross-org table (ORG/MACHINE columns),
 // an incremental text filter, and a colored detail line for the selection.
 type runnersView struct {
-	tbl    table.Model
-	cols   []table.Column          // base column widths (re-fitted to the terminal on resize)
-	all    []service.RunnerWithOrg // full set
-	rows   []service.RunnerWithOrg // filtered (mirrors the table rows)
-	theme  Theme
-	width  int
-	filter textinput.Model
-	active bool // filter input is focused
+	tbl   table.Model
+	cols  []table.Column          // base column widths (re-fitted to the terminal on resize)
+	all   []service.RunnerWithOrg // full set
+	rows  []service.RunnerWithOrg // filtered (mirrors the table rows)
+	theme Theme
+	width int
+	flt   filterState
 }
 
 func newRunnersView(t Theme) runnersView {
@@ -39,18 +37,14 @@ func newRunnersView(t Theme) runnersView {
 	}
 	tbl := table.New(table.WithColumns(cols), table.WithFocused(true))
 	tbl.SetStyles(t.Table)
-
-	ti := textinput.New()
-	ti.Placeholder = "type to filter by org / name / status / label…"
-	ti.Prompt = ""
-	return runnersView{tbl: tbl, cols: cols, theme: t, filter: ti}
+	return runnersView{tbl: tbl, cols: cols, theme: t, flt: newFilterState("type to filter by org / name / status / label…")}
 }
 
 func (v *runnersView) setSize(w, h int) {
 	v.width = w
 	v.tbl.SetWidth(w)
 	v.tbl.SetColumns(fillWidth(v.cols, w))
-	v.filter.SetWidth(w - 4)
+	v.flt.setWidth(w - 4)
 	if h > 3 {
 		v.tbl.SetHeight(h)
 	}
@@ -63,7 +57,7 @@ func (v *runnersView) setRows(rows []service.RunnerWithOrg) {
 
 // applyFilter recomputes the visible rows from the filter query.
 func (v *runnersView) applyFilter() {
-	q := strings.ToLower(strings.TrimSpace(v.filter.Value()))
+	q := v.flt.query()
 	v.rows = v.rows[:0]
 	for _, row := range v.all {
 		if q == "" || strings.Contains(v.haystack(row), q) {
@@ -96,21 +90,19 @@ func (v runnersView) haystack(row service.RunnerWithOrg) string {
 }
 
 // startFilter focuses the filter input. stopFilter blurs it, optionally clearing.
-func (v *runnersView) startFilter() tea.Cmd { v.active = true; return v.filter.Focus() }
+func (v *runnersView) startFilter() tea.Cmd { return v.flt.start() }
 func (v *runnersView) stopFilter(clear bool) {
-	v.active = false
-	v.filter.Blur()
+	v.flt.stop(clear)
 	if clear {
-		v.filter.SetValue("")
 		v.applyFilter()
 	}
 }
 
-func (v runnersView) filtering() bool { return v.active }
+func (v runnersView) filtering() bool { return v.flt.filtering() }
 
 func (v runnersView) updateFilter(msg tea.Msg) (runnersView, tea.Cmd) {
 	var cmd tea.Cmd
-	v.filter, cmd = v.filter.Update(msg)
+	v.flt, cmd = v.flt.update(msg)
 	v.applyFilter()
 	return v, cmd
 }
@@ -131,8 +123,8 @@ func (v runnersView) selected() (service.RunnerWithOrg, bool) {
 
 func (v runnersView) view() string {
 	last := v.detail()
-	if v.active || strings.TrimSpace(v.filter.Value()) != "" {
-		last = v.theme.StatusInfo.Render("/ ") + v.filter.View()
+	if v.flt.shown() {
+		last = v.flt.line(v.theme)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, v.tbl.View(), last)
 }

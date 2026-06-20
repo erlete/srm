@@ -2,6 +2,7 @@ package runner
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -83,6 +84,11 @@ type Orchestrator interface {
 	EnsureBase(ctx context.Context) error
 	CreateRunner(ctx context.Context, spec RunnerSpec, dl Download, regToken string) error
 	RemoveRunner(ctx context.Context, name, org, removeToken string) error
+	// AgentID reads the GitHub runner id the agent recorded locally in its .runner
+	// file at registration. This host-local, host-bound id is how a runner must be
+	// deregistered — never a name lookup across the org, which can resolve to
+	// another host's same-named runner. Returns an error if the file is absent.
+	AgentID(org, name string) (int64, error)
 	// RefreshUnit re-applies the systemd drop-in (hardening + tool-cache env) to
 	// an already-installed runner and restarts it, without a full recreate.
 	RefreshUnit(ctx context.Context, org, name string) error
@@ -110,6 +116,14 @@ type Orchestrator interface {
 	ClearJIT(org, slot string) error
 	// PruneDepCache evicts build-tool cache entries not accessed within maxAge.
 	PruneDepCache(ctx context.Context, maxAge time.Duration, dryRun bool) (PruneStats, error)
+
+	// PurgeBase executes the host-base removals for `srm uninstall`: the named
+	// service users (userdel; absent users are skipped), the given absolute paths
+	// (recursively), and — when RemoveSlice is set — the aggregate srm.slice unit
+	// plus a daemon-reload. WHAT to remove (the never-touch-foreign-infra policy)
+	// is the caller's decision; this only performs the removals, idempotently,
+	// aggregating failures rather than stopping at the first.
+	PurgeBase(ctx context.Context, p BasePurge) error
 
 	// --- read-only host inspection for `srm reconcile` ---
 
@@ -286,6 +300,14 @@ func (u *ubuntu) ensureBaseIsolated(ctx context.Context) error {
 	if err := os.Chmod(u.installRoot, 0o755); err != nil {
 		return err
 	}
+	// Shared tarball cache (installRoot/.cache): the actions/runner tarball is
+	// cached here for ALL orgs and written as root. It must be bootstrapped
+	// independently of any org subtree so a fresh host — or a recreate after a
+	// full uninstall removed installRoot — works with no manual setup. (Legacy
+	// mode creates this too; the isolated path previously omitted it.)
+	if err := os.MkdirAll(filepath.Join(u.installRoot, ".cache"), 0o755); err != nil {
+		return err
+	}
 	if err := mkdirOwned(ctx, home, 0o700, user); err != nil {
 		return err
 	}
@@ -412,6 +434,11 @@ func httpDownload(ctx context.Context, url, dst string) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
+	}
+	// Self-bootstrap the destination dir: install must assume nothing pre-exists
+	// (e.g. {installRoot}/.cache after a full uninstall removed installRoot).
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
 	}
 	tmp := dst + ".tmp"
 	f, err := os.Create(tmp)
@@ -711,6 +738,43 @@ func (u *ubuntu) writeSliceFile() error {
 	return os.WriteFile(path, []byte(renderSlice(u.opts)), 0o644)
 }
 
+// BasePurge selects the host-base artifacts PurgeBase removes during uninstall.
+type BasePurge struct {
+	Users       []string // service users to remove via userdel (absent users skipped)
+	Paths       []string // absolute dirs/files removed recursively (os.RemoveAll)
+	RemoveSlice bool     // remove /etc/systemd/system/srm.slice + daemon-reload
+}
+
+// PurgeBase performs the host-base removals for uninstall. It tolerates missing
+// users/paths (idempotent) and aggregates failures instead of stopping at the
+// first, so a partially-broken host still gets maximally cleaned.
+func (u *ubuntu) PurgeBase(ctx context.Context, p BasePurge) error {
+	var errs []string
+	for _, name := range p.Users {
+		if _, err := user.Lookup(name); err != nil {
+			continue // not present — nothing to remove
+		}
+		if out, err := exec.CommandContext(ctx, "userdel", name).CombinedOutput(); err != nil {
+			errs = append(errs, fmt.Sprintf("userdel %s: %v: %s", name, err, strings.TrimSpace(string(out))))
+		}
+	}
+	for _, path := range p.Paths {
+		if err := os.RemoveAll(path); err != nil {
+			errs = append(errs, fmt.Sprintf("remove %s: %v", path, err))
+		}
+	}
+	if p.RemoveSlice {
+		if err := os.Remove(filepath.Join("/etc/systemd/system", AggregateSlice)); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Sprintf("remove slice: %v", err))
+		}
+		_ = exec.CommandContext(ctx, "systemctl", "daemon-reload").Run()
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 // writeHardening installs the systemd drop-in for a runner's unit (see
 // renderDropIn for the contents), ensures the aggregate slice unit exists when
 // configured, and reloads systemd once for both.
@@ -832,6 +896,33 @@ func (u *ubuntu) RemoveRunner(ctx context.Context, name, org, removeToken string
 		_ = c.Run()
 	}
 	return os.RemoveAll(dir)
+}
+
+// dotRunner mirrors the fields srm needs from the agent's .runner file. agentId is
+// the GitHub runner id the REST API uses to deregister this exact runner.
+type dotRunner struct {
+	AgentID int64 `json:"agentId"`
+}
+
+// AgentID reads the GitHub runner id recorded in the agent's .runner file at
+// registration (written by config.sh). It is the host-local, host-bound identity
+// used to deregister THIS host's runner by id — never a name lookup across the org,
+// which could match (and delete) another host's same-named runner.
+func (u *ubuntu) AgentID(org, name string) (int64, error) {
+	data, err := os.ReadFile(filepath.Join(u.runnerDir(org, name), ".runner"))
+	if err != nil {
+		return 0, err
+	}
+	var dr dotRunner
+	// The agent (.NET) writes .runner as UTF-8 WITH a byte-order mark; strip it so
+	// encoding/json doesn't choke on the leading BOM bytes.
+	if err := json.Unmarshal(bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}), &dr); err != nil {
+		return 0, fmt.Errorf("parse .runner: %w", err)
+	}
+	if dr.AgentID == 0 {
+		return 0, fmt.Errorf(".runner has no agentId")
+	}
+	return dr.AgentID, nil
 }
 
 // EphemeralSlotSpec describes one ephemeral slot lane to stand up on the host.
@@ -1015,6 +1106,11 @@ func (u *ubuntu) PendingJIT(org, slot string) int64 {
 // RecordJIT persists the just-minted runner id (fsync'd) BEFORE the job runs, so a
 // crash/reboot mid-job leaves a reapable id for the next cycle.
 func (u *ubuntu) RecordJIT(org, slot string, id int64) error {
+	// Self-bootstrap the control dir so a cycle survives /var/lib/srm having been
+	// removed (e.g. by a prior uninstall) — never crash recording the JIT id.
+	if err := os.MkdirAll(filepath.Dir(u.jitIDPath(org, slot)), 0o700); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(u.jitIDPath(org, slot), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err

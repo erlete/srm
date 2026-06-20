@@ -17,10 +17,12 @@ import (
 // here you scale slots and drain by slot id, never address a runner by name.
 type ephemeralView struct {
 	tbl   table.Model
-	cols  []table.Column // base column widths (re-fitted to the terminal on resize)
-	rows  []service.EphemeralSlot
+	cols  []table.Column          // base column widths (re-fitted to the terminal on resize)
+	all   []service.EphemeralSlot // full set
+	rows  []service.EphemeralSlot // filtered (mirrors the table rows)
 	theme Theme
 	width int
+	flt   filterState
 }
 
 func newEphemeralView(t Theme) ephemeralView {
@@ -34,22 +36,35 @@ func newEphemeralView(t Theme) ephemeralView {
 	}
 	tbl := table.New(table.WithColumns(cols), table.WithFocused(true))
 	tbl.SetStyles(t.Table)
-	return ephemeralView{tbl: tbl, cols: cols, theme: t}
+	return ephemeralView{tbl: tbl, cols: cols, theme: t, flt: newFilterState("type to filter by org / slot / state…")}
 }
 
 func (v *ephemeralView) setSize(w, h int) {
 	v.width = w
 	v.tbl.SetWidth(w)
 	v.tbl.SetColumns(fillWidth(v.cols, w))
+	v.flt.setWidth(w - 4)
 	if h > 3 {
 		v.tbl.SetHeight(h)
 	}
 }
 
 func (v *ephemeralView) setRows(rows []service.EphemeralSlot) {
-	v.rows = rows
-	tr := make([]table.Row, 0, len(rows))
-	for _, s := range rows {
+	v.all = rows
+	v.applyFilter()
+}
+
+// applyFilter recomputes the visible slot rows from the filter query.
+func (v *ephemeralView) applyFilter() {
+	q := v.flt.query()
+	v.rows = v.rows[:0]
+	for _, s := range v.all {
+		if q == "" || strings.Contains(v.haystack(s), q) {
+			v.rows = append(v.rows, s)
+		}
+	}
+	tr := make([]table.Row, 0, len(v.rows))
+	for _, s := range v.rows {
 		conform := "ok"
 		if !s.UnitOK {
 			conform = "drift"
@@ -60,6 +75,29 @@ func (v *ephemeralView) setRows(rows []service.EphemeralSlot) {
 		})
 	}
 	v.tbl.SetRows(tr)
+}
+
+func (v ephemeralView) haystack(s service.EphemeralSlot) string {
+	label, _ := slotState(s)
+	return strings.ToLower(strings.Join([]string{s.Org, s.Slot, label}, " "))
+}
+
+// startFilter focuses the filter input. stopFilter blurs it, optionally clearing.
+func (v *ephemeralView) startFilter() tea.Cmd { return v.flt.start() }
+func (v *ephemeralView) stopFilter(clear bool) {
+	v.flt.stop(clear)
+	if clear {
+		v.applyFilter()
+	}
+}
+
+func (v ephemeralView) filtering() bool { return v.flt.filtering() }
+
+func (v ephemeralView) updateFilter(msg tea.Msg) (ephemeralView, tea.Cmd) {
+	var cmd tea.Cmd
+	v.flt, cmd = v.flt.update(msg)
+	v.applyFilter()
+	return v, cmd
 }
 
 func (v ephemeralView) update(msg tea.Msg) (ephemeralView, tea.Cmd) {
@@ -77,11 +115,18 @@ func (v ephemeralView) selected() (service.EphemeralSlot, bool) {
 }
 
 func (v ephemeralView) view() string {
-	return lipgloss.JoinVertical(lipgloss.Left, v.tbl.View(), v.detail())
+	last := v.detail()
+	if v.flt.shown() {
+		last = v.flt.line(v.theme)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, v.tbl.View(), last)
 }
 
 func (v ephemeralView) detail() string {
 	if len(v.rows) == 0 {
+		if v.flt.shown() {
+			return v.theme.Help.Render("no slots match")
+		}
 		return v.theme.Help.Render("no ephemeral slots on this host — press n to add some")
 	}
 	s, ok := v.selected()

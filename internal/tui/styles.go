@@ -65,7 +65,11 @@ func NewTheme() Theme {
 		Bold(true).
 		Foreground(colPrimary).
 		Background(lipgloss.Color("236"))
-	tbl.Cell = tbl.Cell.Foreground(colText)
+	// Cell carries NO foreground on purpose: a per-cell foreground makes bubbles
+	// emit an ANSI reset at every cell boundary (table.go renderRow), and that
+	// reset truncates the row-level Selected background to just the first column.
+	// Leaving cells uncolored lets Selected's background span the full row width.
+	tbl.Cell = tbl.Cell.UnsetForeground()
 
 	return Theme{
 		Title: lipgloss.NewStyle().Bold(true).Foreground(colPrimary),
