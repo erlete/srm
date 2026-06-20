@@ -15,7 +15,8 @@ import (
 const (
 	ClassHealthy      = "healthy"       // local, registered, conformant, active+online
 	ClassOrphanUnit   = "orphan-unit"   // host unit/tree exists, NOT on GitHub → host teardown
-	ClassStaleDropIn  = "stale-dropin"  // drop-in != expected (cache env / limits / user) → refresh
+	ClassStaleDropIn  = "stale-dropin"  // drop-in != expected (cache env / limits / user / older template) → refresh
+	ClassDropInNewer  = "dropin-newer"  // on-disk drop-in is a NEWER template generation than this srm → authoritative-skip (update the binary)
 	ClassStuck        = "stuck"         // local but dead or offline → restart
 	ClassLegacyFlat   = "legacy-flat"   // tree at the pre-namespacing flat path → report
 	ClassOrphanGitHub = "orphan-github" // on GitHub, no managed unit here → report only
@@ -26,6 +27,7 @@ const (
 	// normal (not drift); a down/crash-looping lane is reported.
 	ClassEphemeralSlot  = "ephemeral"       // active lane, not crash-looping → healthy
 	ClassEphemeralStuck = "ephemeral-stuck" // lane inactive or crash-looping → report
+	ClassEphemeralNewer = "ephemeral-newer" // on-disk lane unit is a NEWER template generation than this srm → authoritative-skip
 )
 
 // EphemeralRestartThreshold is the systemd NRestarts count above which an
@@ -144,8 +146,13 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 			st.Class, st.Detail = ClassOrphanUnit, "host unit not registered on GitHub"
 		case insp.HasFlatTree && !insp.HasTree:
 			st.Class, st.Detail = ClassLegacyFlat, "install tree at legacy flat path"
+		case insp.DropInNewer:
+			// The on-disk drop-in was written by a NEWER srm. Never rewrite it back
+			// down: an older binary authoritative-skips so a mixed-version fleet
+			// converges upward instead of two hosts ping-ponging the same drop-in.
+			st.Class, st.Detail = ClassDropInNewer, fmt.Sprintf("drop-in template v%d is newer than this srm (v%d) - update the binary", insp.DropInVer, runner.CurrentDropInVersion)
 		case !insp.DropInOK:
-			st.Class, st.Detail = ClassStaleDropIn, "drop-in differs from expected (cache env / limits / user)"
+			st.Class, st.Detail = ClassStaleDropIn, "drop-in differs from expected (cache env / limits / user / older template)"
 		case !insp.Active:
 			st.Class, st.Detail = ClassStuck, "unit not active"
 		case !st.Online:
@@ -180,6 +187,10 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 			st.Class, st.Detail = ClassEphemeralSlot, "ephemeral slot healthy"
 		case !insp.Active:
 			st.Class, st.Detail = ClassEphemeralStuck, "ephemeral slot inactive"
+		case insp.UnitNewer:
+			// Authoritative-skip: a newer srm wrote this lane unit; don't flag it for
+			// recreate-down from an older binary (see ClassDropInNewer).
+			st.Class, st.Detail = ClassEphemeralNewer, fmt.Sprintf("ephemeral unit template v%d is newer than this srm (v%d) - update the binary", insp.UnitVer, runner.CurrentEphemeralVersion)
 		case !insp.UnitOK:
 			st.Class, st.Detail = ClassEphemeralStuck, "ephemeral unit drifted from expected (recreate to apply)"
 		default:
@@ -334,6 +345,11 @@ func (m *Manager) repairRunner(ctx context.Context, st *RunnerState, apply bool)
 		} else {
 			st.Fix = "refreshed"
 		}
+	case ClassDropInNewer, ClassEphemeralNewer:
+		// Authoritative-skip: this binary is OLDER than the on-disk template, so
+		// refreshing would downgrade a newer host's unit. Never touch it; the fix is
+		// to update this srm binary (surfaced in the report and by `srm doctor`).
+		st.Fix = "skipped (on-disk template newer than this srm; update the binary)"
 		// legacy-flat and orphan-github are report-only (no safe automatic host fix).
 	}
 }

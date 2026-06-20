@@ -560,7 +560,21 @@ func (u *ubuntu) teardownService(ctx context.Context, dir, svc string) {
 // options (NoNewPrivileges / ProtectSystem=strict / RestrictSUIDSGID) are
 // deliberately omitted - they break workflows that use sudo or apt - but are
 // listed commented for hosts whose jobs never need them.
+// CurrentDropInVersion and CurrentEphemeralVersion are the template generations
+// srm renders today, stamped as a "# srm-dropin-vN" / "# srm-ephemeral-vN" comment
+// in the unit. reconcile compares the on-disk marker against these BEFORE
+// byte-equality, so a mixed-version fleet converges upward instead of thrashing: a
+// host whose binary is older than an on-disk marker leaves that drop-in alone
+// (authoritative-skip), and a newer binary owns the bump. Bump the integer (AND the
+// matching "# srm-...-vN" line in the const below) ONLY when the rendered body
+// intentionally changes; TestRenderDropIn asserts the two stay in lockstep.
+const (
+	CurrentDropInVersion    = 1
+	CurrentEphemeralVersion = 1
+)
+
 const hardeningDropIn = `[Service]
+# srm-dropin-v1
 # Managed by srm. Defense-in-depth hardening that is safe for general CI.
 ProtectHome=true
 PrivateTmp=true
@@ -645,7 +659,8 @@ func writeEnvAndLimits(b *strings.Builder, opts Options) {
 // deliberately NOT set to pid - it would hide /proc/cpuinfo and break nproc-based
 // build parallelism. NoNewPrivileges blocks privilege GAIN only; root dropping to
 // the per-org user via setpriv still works.
-const ephemeralHardening = `# Managed by srm. Ephemeral-lane hardening (stricter than the persistent drop-in).
+const ephemeralHardening = `# srm-ephemeral-v1
+# Managed by srm. Ephemeral-lane hardening (stricter than the persistent drop-in).
 NoNewPrivileges=true
 ProtectProc=invisible
 ProtectHome=true

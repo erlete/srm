@@ -1,11 +1,88 @@
 package runner
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/erlete/srm/internal/config"
 )
+
+// TestTemplateVersionMarkers pins the template-generation markers. renderDropIn and
+// renderEphemeralUnit must stamp a marker that matches the version const, so a body
+// change that bumps the const but not the comment (or vice versa) fails here, and
+// unitVersion must parse it back. The marker is what lets reconcile arbitrate
+// generations across a mixed-version fleet without thrashing.
+func TestTemplateVersionMarkers(t *testing.T) {
+	d := renderDropIn(Options{ToolCache: "/t", CacheRoot: "/c"})
+	if want := fmt.Sprintf("# srm-dropin-v%d\n", CurrentDropInVersion); !strings.Contains(d, want) {
+		t.Errorf("drop-in missing marker %q:\n%s", want, d)
+	}
+	if got := unitVersion(d, "dropin"); got != CurrentDropInVersion {
+		t.Errorf("unitVersion(dropin) = %d, want %d", got, CurrentDropInVersion)
+	}
+	if !strings.HasPrefix(d, "[Service]\n") { // marker is a comment AFTER [Service]
+		t.Errorf("drop-in must still start with [Service]:\n%s", d)
+	}
+
+	e := renderEphemeralUnit(Options{SelfExe: "/s"}, "o", "1", "/d")
+	if want := fmt.Sprintf("# srm-ephemeral-v%d\n", CurrentEphemeralVersion); !strings.Contains(e, want) {
+		t.Errorf("ephemeral unit missing marker %q:\n%s", want, e)
+	}
+	if got := unitVersion(e, "ephemeral"); got != CurrentEphemeralVersion {
+		t.Errorf("unitVersion(ephemeral) = %d, want %d", got, CurrentEphemeralVersion)
+	}
+	if got := unitVersion(e, "dropin"); got != 0 {
+		t.Errorf("ephemeral marker must not be read as a dropin marker, got %d", got)
+	}
+}
+
+// TestUnitVersionParsing covers the marker parser's edge cases.
+func TestUnitVersionParsing(t *testing.T) {
+	cases := []struct {
+		in, kind string
+		want     int
+	}{
+		{"[Service]\n# srm-dropin-v1\nProtectHome=true\n", "dropin", 1},
+		{"[Service]\n# srm-dropin-v7\n", "dropin", 7},
+		{"[Service]\nProtectHome=true\n", "dropin", 0},     // absent => pre-versioning (v0)
+		{"# srm-ephemeral-v2\nNoNewPrivileges=true\n", "ephemeral", 2},
+		{"# srm-dropin-vX\n", "dropin", 0},                 // malformed => 0
+		{"  # srm-dropin-v3  \n", "dropin", 3},             // tolerant of surrounding space
+	}
+	for _, c := range cases {
+		if got := unitVersion(c.in, c.kind); got != c.want {
+			t.Errorf("unitVersion(%q, %q) = %d, want %d", c.in, c.kind, got, c.want)
+		}
+	}
+}
+
+// TestTemplateConformance pins the marker-authority arithmetic that reconcile uses,
+// including the "newer" (authoritative-skip) path that can't be exercised on a live
+// host (no drop-in with a future marker exists in the field).
+func TestTemplateConformance(t *testing.T) {
+	cur := CurrentDropInVersion
+	cases := []struct {
+		name              string
+		onDisk            int
+		bytesMatch        bool
+		wantOK, wantNewer bool
+	}{
+		{"equal+match => conformant", cur, true, true, false},
+		{"equal+bytes differ => stale (refresh)", cur, false, false, false},
+		{"older => stale (forward bump)", cur - 1, true, false, false},
+		{"absent v0 => stale (forward bump)", 0, true, false, false},
+		{"newer => authoritative-skip", cur + 1, true, false, true},
+		{"newer+bytes differ => still skip", cur + 1, false, false, true},
+	}
+	for _, c := range cases {
+		ok, newer := templateConformance(c.onDisk, cur, c.bytesMatch)
+		if ok != c.wantOK || newer != c.wantNewer {
+			t.Errorf("%s: templateConformance(%d,%d,%v) = (ok=%v,newer=%v), want (ok=%v,newer=%v)",
+				c.name, c.onDisk, cur, c.bytesMatch, ok, newer, c.wantOK, c.wantNewer)
+		}
+	}
+}
 
 // TestRenderDropIn pins the drop-in contract. renderDropIn is the single source
 // of truth that writeHardening writes and reconcile will diff against, so its
