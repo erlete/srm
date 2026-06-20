@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-21
+
 ### Added
 - **One-line installer** ([install.sh](install.sh)): `curl -fsSL .../install.sh | sudo bash`
   downloads the latest release, verifies its sha256, and installs to
@@ -205,6 +207,7 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a
   persistent-runner concept.
 
-[Unreleased]: https://github.com/erlete/srm/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/erlete/srm/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/erlete/srm/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/erlete/srm/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/erlete/srm/releases/tag/v1.0.0
