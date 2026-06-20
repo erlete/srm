@@ -4,6 +4,57 @@ All notable changes to `srm` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Lifecycle, onboarding, and UX work toward **1.1.0** (additive — existing configs
+and hosts keep working untouched).
+
+### Added
+- **`srm uninstall`** — a safe, scoped purge of srm's host footprint (runners,
+  ephemeral lanes, per-org users, caches, slice). Scope flags
+  `--force` / `--keep-config` / `--keep-binary` / `--keep-github` / `--purge`, a
+  drain gate that refuses to tear down a busy runner or in-flight lane (override
+  with `--force`), a `--dry-run` plan preview, and a typed-hostname confirmation
+  (`--yes` for automation). Shared infra (`/opt/hostedtoolcache`) and config are
+  preserved unless `--purge`.
+- **`srm backup` / `srm restore`** — archive the config directory (`config.yaml`,
+  App keys, `secrets.age`) to a `.tar.gz` and restore it (path-traversal-safe,
+  re-asserting file modes). `uninstall --purge` takes an automatic backup first.
+- **Guided first-run setup** — bare `srm` on an unconfigured host now runs an
+  interactive wizard (reusing `srm init`'s form) that writes the config and
+  verifies GitHub auth before launching the TUI, so a new user never hand-edits
+  `config.yaml`. `srm init` is kept for CI, re-init, and adding another org.
+- **Filtering on every list view** — the `/` incremental filter now works on the
+  **Ephemeral**, **Groups**, and **Health** tabs (was Persistent-only).
+- `CONTRIBUTING.md` documenting the branch policy (squash-merge to `stable`),
+  SemVer, the release flow, and the changelog requirement.
+
+### Changed
+- **`srm init`** verifies the App credentials against GitHub after writing the
+  config (the common wrong-installation-id / unreadable-key trap now surfaces
+  immediately instead of at first TUI load).
+- TUI: the selected table row highlight spans the **full row width** (previously
+  only the first column was highlighted); the Groups tab gained a selection
+  detail line.
+
+### Fixed
+- Strip a UTF-8 **BOM** from the agent's `.runner` file before parsing its id —
+  some agents write one, which previously broke id-based deregistration.
+- `srm runners create` **self-bootstraps its base directories** (the shared
+  `installRoot/.cache`, plus the download and JIT control-file parents), so a
+  create succeeds on a clean host or immediately after a full uninstall.
+
+### Security
+- **Host-bound deregistration** — destroying/uninstalling a persistent runner now
+  deregisters it on GitHub by the agent's **host-local id** (from `.runner`), never
+  by name. A name match could deregister a same-named runner owned by **another
+  host** in a shared org; id matching makes the GitHub delete strictly host-owned.
+- **CI supply-chain hardening** — GitHub Actions are pinned to commit SHAs (not
+  mutable tags), `checkout` runs with `persist-credentials: false`, a
+  `govulncheck` gate fails the build on any reachable known vulnerability, and
+  weekly Dependabot keeps pins/modules current. The `actions/setup-go` v6 bump
+  also pulls in a `form-data` CVE fix.
+
 ## [1.0.0] — 2026-06-19
 
 First stable release. `srm` is an interactive **fleet administrator** (TUI + CLI)
@@ -139,4 +190,5 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a
   persistent-runner concept.
 
+[Unreleased]: https://github.com/erlete/srm/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/erlete/srm/releases/tag/v1.0.0
