@@ -93,7 +93,7 @@ func TestRenderPaths(t *testing.T) {
 	// Active filter on the persistent view.
 	m.tab = tabPersistent
 	_ = m.runners.startFilter()
-	m.runners.filter.SetValue("globex")
+	m.runners.flt.input.SetValue("globex")
 	m.runners.applyFilter()
 	if v := m.View(); v.Content == "" {
 		t.Fatal("nil view with filter active")
