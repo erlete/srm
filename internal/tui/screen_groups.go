@@ -119,7 +119,10 @@ func (v groupsView) view() string {
 func (v groupsView) detail() string {
 	row, ok := v.selected()
 	if !ok {
-		return v.theme.Help.Render("no groups match")
+		if v.flt.shown() {
+			return v.theme.Help.Render("no groups match")
+		}
+		return v.theme.Help.Render("no runner groups")
 	}
 	g := row.Group
 	parts := []string{
