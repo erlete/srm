@@ -82,6 +82,17 @@ See [CHANGELOG.md](CHANGELOG.md) for the full inventory and
 `srm` is a single static binary (all dependencies are pure Go, so it builds with
 `CGO_ENABLED=0` and has no runtime dependencies).
 
+**One-line install** (Ubuntu x64) downloads the latest release, verifies its
+sha256, and installs to `/usr/local/bin/srm`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/erlete/srm/stable/install.sh | sudo bash
+```
+
+Pin a version or prefix with env vars, e.g.
+`curl -fsSL .../install.sh | sudo SRM_VERSION=v1.2.0 PREFIX=/usr/local bash`.
+Then run `sudo srm` (the first run guides setup). Or build it yourself:
+
 ```bash
 # On the Ubuntu x64 host (or cross-compiled and copied over):
 make install            # builds dist/srm and installs to /usr/local/bin/srm
