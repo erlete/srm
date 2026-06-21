@@ -89,7 +89,7 @@ func newRunnersUpgradeCmd() *cobra.Command {
 					failed++
 					tag := ""
 					if r.RolledBack {
-						tag = " (rolled back to " + r.From + ")"
+						tag = " (rolled back to prior agent; still serving)"
 					}
 					fmt.Printf("FAIL %s %s/%s: %v%s\n", r.Kind, r.Org, r.Name, r.Err, tag)
 				case r.Skipped != "":

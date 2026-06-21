@@ -8,15 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`srm runners upgrade`** - in-place upgrade of the actions/runner AGENT on this
-  host's runners, the data-plane half of progressive updates. Persistent runners
-  keep their registration (the same binary swap the agent's own auto-update
-  performs - no token, labels, or group needed); ephemeral lanes are rebuilt
-  between job cycles. Upgrades run one runner at a time, each self-tested back to
-  active or rolled back to its prior (cached) version before the next is touched,
-  so at most one runner is ever offline. Busy runners and mid-cycle ephemeral lanes
-  are skipped. `--to-version` / `runnerVersionPin` pin a target (refused if its
-  checksum is not verifiable), `--rollback` restores the recorded prior version,
-  `--force` allows a re-install or downgrade, `--dry-run` previews.
+  host's PERSISTENT runners, the data-plane half of progressive updates. A runner
+  keeps its registration: srm swaps the agent's version-specific payload (bin/,
+  externals/) the way the agent's own auto-update does, needing no token, labels, or
+  group. Upgrades run one runner at a time, each self-tested (a bounded poll that
+  fails on a crash-loop, not a single sample) back to active before the next is
+  touched, so at most one runner is ever offline. The prior payload is snapshotted
+  aside by rename first, so a failed upgrade is rolled back to the working agent by a
+  local rename - independent of the download cache or any recorded version. Busy
+  runners are skipped, and a runner that becomes busy mid-pass is re-checked and
+  skipped before its swap. `--to-version` / `runnerVersionPin` pin a target (refused
+  unless its checksum is verifiable), `--rollback` restores the recorded prior
+  version, `--force` allows a re-install or downgrade, `--dry-run` previews (and
+  writes nothing). Ephemeral-lane agent upgrade is intentionally deferred (recreate a
+  lane to refresh its agent) pending a safe job-drain protocol.
 - **Host state manifest** (`/var/lib/srm/state.json`, root 0600) - records each
   runner's installed agent version, its host-bound GitHub id, and unit template
   generation. It is advisory: the live GitHub list and on-disk units remain the
@@ -28,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`runnerVersionPin`** config field - the explicit upgrade target, kept separate
   from `runnerVersion` (which Load coerces to a default and so can never signal
   "unpinned"). Empty means upgrades track the published version.
+
+### Changed
+- New persistent runners are registered with `--disableupdate` so the agent's own
+  auto-updater can't move the version out from under srm's manifest; srm owns runner
+  versions via `runners upgrade`.
+- The downloaded agent tarball cache moved from `{installRoot}/.cache` (which doubled
+  as the job user's writable `$HOME/.cache` in single-user mode) to a root-only
+  `/var/lib/srm/agent-cache`, so untrusted job code can no longer plant a tarball that
+  a later root-side extract would trust. The host-bound id gate now also falls back to
+  the authoritative id in the agent's `.runner` file when the manifest has none.
 
 ## [1.3.0] - 2026-06-21
 

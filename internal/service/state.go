@@ -111,16 +111,25 @@ func (m *StateManifest) Save(path string) error {
 	if m.StateVersion == 0 {
 		m.StateVersion = CurrentStateVersion
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	// Unique temp file per writer (not a fixed path+".tmp"): two concurrent Saves
+	// must never share a temp inode, or one's O_TRUNC truncates the other mid-write
+	// and the rename publishes torn JSON that LoadState would then reject.
+	f, err := os.CreateTemp(dir, ".state-*.json.tmp")
 	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once renamed; cleans up on any error path
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
 		return err
 	}
 	if _, err := f.Write(data); err != nil {

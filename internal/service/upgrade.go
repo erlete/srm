@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -85,9 +86,11 @@ func (m *Manager) UpgradeLocalRunners(ctx context.Context, opts UpgradeOpts) ([]
 
 	var results []UpgradeResult
 	results = append(results, m.upgradePersistent(ctx, opts, st, resolve, errs)...)
-	results = append(results, m.upgradeEphemeral(ctx, opts, st, resolve, errs)...)
+	results = append(results, m.upgradeEphemeral(ctx, opts, errs)...)
 
-	_ = st.Save(StatePath) // belt-and-suspenders; the per-runner saves already persisted
+	if !opts.DryRun {
+		_ = st.Save(StatePath) // belt-and-suspenders; the per-runner saves already persisted
+	}
 	return results, errs
 }
 
@@ -107,7 +110,9 @@ func (m *Manager) upgradePersistent(ctx context.Context, opts UpgradeOpts, st *S
 			continue
 		}
 		out = append(out, m.upgradeOnePersistent(ctx, opts, st, resolve, row))
-		_ = st.Save(StatePath)
+		if !opts.DryRun {
+			_ = st.Save(StatePath)
+		}
 	}
 	return out
 }
@@ -128,9 +133,18 @@ func (m *Manager) upgradeOnePersistent(ctx context.Context, opts UpgradeOpts, st
 		return res
 	}
 	// Host-bound id gate: refuse if the live registration under this name is not the
-	// one this host recorded (another host may own it). Checked BEFORE resolving the
-	// target so a mismatch never even makes the download API call.
-	if skip := idMismatchSkip(rec.GitHubRunnerID, row.Runner.ID); skip != "" {
+	// one this host recorded. When the manifest has no recorded id (pre-v1.4 runner,
+	// or a create where the id read failed) fall back to the authoritative id in the
+	// agent's own .runner file - never treat "unrecorded" as "no gate", which would
+	// let a stale local tree name-matched to a foreign live runner through. Checked
+	// BEFORE resolving the target so a mismatch never even makes the download call.
+	recordedID := rec.GitHubRunnerID
+	if recordedID == 0 {
+		if aid, err := orch.AgentID(org, name); err == nil {
+			recordedID = aid
+		}
+	}
+	if skip := idMismatchSkip(recordedID, row.Runner.ID); skip != "" {
 		res.Skipped = skip
 		return res
 	}
@@ -148,18 +162,26 @@ func (m *Manager) upgradeOnePersistent(ctx context.Context, opts UpgradeOpts, st
 		return res
 	}
 
-	// Persist the rollback target BEFORE the swap so a crash mid-upgrade still leaves
-	// a recoverable prior version (forward mode only; rollback's prior IS the target).
-	prev := res.From
-	if prev != "" && !opts.Rollback {
-		rec.PreviousVersion = prev
-		st.Put(rec)
-		_ = st.Save(StatePath)
+	// Re-check live busy immediately before the swap: the busy flag above came from a
+	// one-shot list snapshot taken before this serial pass began, so a job dispatched
+	// to this (idle-at-snapshot) runner during the pass would otherwise be SIGTERM'd by
+	// the stop. A transient GetRunner error is non-fatal - the swap's own stop is still
+	// idle-gated by the snapshot, and we prefer progress to stalling on a flaky API.
+	if c, cerr := m.client(ctx, org); cerr == nil {
+		if live, gerr := c.GetRunner(ctx, org, row.Runner.ID); gerr == nil && live.Busy {
+			res.Skipped = "became busy during the pass (re-run to upgrade it)"
+			return res
+		}
 	}
 
+	// UpgradeRunnerAgent is atomic from the caller's view: on failure it has already
+	// rolled the runner back to its prior agent (a local payload-snapshot restore,
+	// independent of the manifest or the download cache), unless the rollback itself
+	// failed - which it signals with runner.ErrRunnerDown.
+	prev := res.From
 	if err := orch.UpgradeRunnerAgent(ctx, org, name, dl); err != nil {
 		res.Err = err
-		m.rollbackPersistent(ctx, orch, org, name, prev, &res)
+		res.RolledBack = !errors.Is(err, runner.ErrRunnerDown)
 		return res
 	}
 
@@ -167,36 +189,23 @@ func (m *Manager) upgradeOnePersistent(ctx context.Context, opts UpgradeOpts, st
 	rec.PreviousVersion = prev
 	rec.TemplateVersion = runner.CurrentDropInVersion
 	rec.LastUpgradeAt = nowStamp()
-	if rec.GitHubRunnerID == 0 && row.Runner.ID != 0 {
-		rec.GitHubRunnerID = row.Runner.ID
+	if rec.GitHubRunnerID == 0 && recordedID != 0 {
+		rec.GitHubRunnerID = recordedID // adopt the authoritative .runner id
 	}
 	st.Put(rec)
 	res.Upgraded = true
 	return res
 }
 
-// rollbackPersistent restores a persistent runner to prev after a failed upgrade,
-// recording the outcome on res. It refuses to roll back to an evicted tarball
-// rather than fetch one unverified.
-func (m *Manager) rollbackPersistent(ctx context.Context, orch runner.Orchestrator, org, name, prev string, res *UpgradeResult) {
-	if prev == "" {
-		res.Err = fmt.Errorf("%w; no known prior version to roll back to (runner may be down)", res.Err)
-		return
-	}
-	rbDL := runner.Download{URL: runner.DownloadURL(prev)}
-	if !orch.CachedAgentTarball(rbDL) {
-		res.Err = fmt.Errorf("%w; cannot roll back (prior tarball %s evicted from cache; runner may be down)", res.Err, prev)
-		return
-	}
-	if rbErr := orch.UpgradeRunnerAgent(ctx, org, name, rbDL); rbErr != nil {
-		res.Err = fmt.Errorf("%w; ROLLBACK ALSO FAILED: %v (runner is down)", res.Err, rbErr)
-		return
-	}
-	res.RolledBack = true
-}
-
-// upgradeEphemeral walks the local ephemeral slot lanes and upgrades each idle one.
-func (m *Manager) upgradeEphemeral(ctx context.Context, opts UpgradeOpts, st *StateManifest, resolve func(string) (runner.Download, error), errs map[string]error) []UpgradeResult {
+// upgradeEphemeral reports the host's ephemeral lanes as skipped. In-place ephemeral
+// AGENT upgrade is deliberately NOT implemented in this release: a safe rebuild has to
+// drain a possibly-mid-job lane, and the only idle signal available (the advisory
+// jit-id) has a mint-before-record window plus a Restart=always race, so a naive
+// teardown could SIGTERM a live job or orphan a single-use registration. Until a real
+// drain/interlock lands, the supported way to move an ephemeral lane's agent is to
+// recreate it (its next cycle re-extracts the current agent anyway). Enumerated rather
+// than silently ignored so the operator sees they were considered.
+func (m *Manager) upgradeEphemeral(ctx context.Context, opts UpgradeOpts, errs map[string]error) []UpgradeResult {
 	host := m.orchestratorFor("")
 	units, err := host.ListEphemeralUnits(ctx)
 	if err != nil {
@@ -212,90 +221,12 @@ func (m *Manager) upgradeEphemeral(ctx context.Context, opts UpgradeOpts, st *St
 		if !ok || (opts.OrgFilter != "" && org != opts.OrgFilter) {
 			continue
 		}
-		out = append(out, m.upgradeOneEphemeral(ctx, opts, st, resolve, org, slot))
-		_ = st.Save(StatePath)
+		out = append(out, UpgradeResult{
+			Kind: KindEphemeral, Org: org, Name: slot,
+			Skipped: "ephemeral agent upgrade not supported yet - recreate the lane (`srm runners destroy --ephemeral --slot " + slot + "` then `srm runners create --ephemeral`) to refresh its agent",
+		})
 	}
 	return out
-}
-
-func (m *Manager) upgradeOneEphemeral(ctx context.Context, opts UpgradeOpts, st *StateManifest, resolve func(string) (runner.Download, error), org, slot string) UpgradeResult {
-	res := UpgradeResult{Kind: KindEphemeral, Org: org, Name: slot}
-	orch := m.orchestratorFor(org)
-
-	rec, ok := st.Get(KindEphemeral, org, slot)
-	if !ok {
-		rec = RunnerRecord{Kind: KindEphemeral, Org: org, Name: slot}
-	}
-	res.From = rec.AgentVersion
-
-	// Idle-only: a non-zero pending JIT means a cycle is in flight - a single-use
-	// registration is minted and a job may be running. Disabling the lane then would
-	// kill it, so skip. (Re-checked again just before the rebuild to shrink the TOCTOU.)
-	if orch.PendingJIT(org, slot) != 0 {
-		res.Skipped = "cycle in flight (re-run to catch the lane idle)"
-		return res
-	}
-
-	dl, stop := m.resolveTarget(orch, opts, resolve, org, &res, rec)
-	if stop {
-		return res
-	}
-	if !m.shouldProceed(opts, &res) {
-		return res
-	}
-	if opts.DryRun {
-		res.Skipped = fmt.Sprintf("dry-run (would upgrade %s -> %s)", orUnknown(res.From), res.To)
-		return res
-	}
-
-	// Rebuild from the slot's persisted mint params so the new lane keeps its group
-	// + labels. Read before the idle re-check so a slow API call isn't in the window.
-	params, err := orch.EphemeralMintParams(org, slot)
-	if err != nil {
-		res.Err = fmt.Errorf("read slot params: %w", err)
-		return res
-	}
-	if params.GroupID == 0 {
-		params.GroupID = m.defaultGroupID(org)
-	}
-	// Re-check idle immediately before teardown (a cycle may have started).
-	if orch.PendingJIT(org, slot) != 0 {
-		res.Skipped = "cycle started during upgrade; re-run"
-		return res
-	}
-
-	prev := res.From
-	if prev != "" && !opts.Rollback {
-		rec.PreviousVersion = prev
-		st.Put(rec)
-		_ = st.Save(StatePath)
-	}
-
-	espec := runner.EphemeralSlotSpec{Org: org, Slot: slot, URL: "https://github.com/" + org, Labels: params.Labels, GroupID: params.GroupID}
-	if err := orch.EnsureEphemeralSlot(ctx, espec, dl); err != nil {
-		res.Err = err
-		if prev != "" {
-			rbDL := runner.Download{URL: runner.DownloadURL(prev)}
-			if orch.CachedAgentTarball(rbDL) {
-				if rbErr := orch.EnsureEphemeralSlot(ctx, espec, rbDL); rbErr == nil {
-					res.RolledBack = true
-				} else {
-					res.Err = fmt.Errorf("%w; ROLLBACK ALSO FAILED: %v (lane is down)", err, rbErr)
-				}
-			} else {
-				res.Err = fmt.Errorf("%w; cannot roll back (prior tarball %s evicted; lane is down)", err, prev)
-			}
-		}
-		return res
-	}
-
-	rec.AgentVersion = res.To
-	rec.PreviousVersion = prev
-	rec.TemplateVersion = runner.CurrentEphemeralVersion
-	rec.LastUpgradeAt = nowStamp()
-	st.Put(rec)
-	res.Upgraded = true
-	return res
 }
 
 // resolveTarget fills res.To and returns the Download to install, or stop=true with
