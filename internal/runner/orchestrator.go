@@ -83,6 +83,22 @@ type RunnerSpec struct {
 type Orchestrator interface {
 	EnsureBase(ctx context.Context) error
 	CreateRunner(ctx context.Context, spec RunnerSpec, dl Download, regToken string) error
+	// UpgradeRunnerAgent replaces a persistent runner's agent BINARIES in place with
+	// the tarball described by dl, preserving its existing registration
+	// (.runner/.credentials) and _work, then restarts the unit and self-tests that it
+	// came back active. This is the same swap the actions/runner auto-updater performs,
+	// so it needs no registration token, labels, or group - and rollback is just the
+	// same call with the prior version's (cached) tarball. The caller MUST have
+	// confirmed the runner is idle; on failure the runner is left stopped/partially
+	// swapped for the caller to roll back. Refuses an unverifiable tarball (see
+	// CachedAgentTarball). Persistent runners only; ephemeral lanes upgrade via
+	// EnsureEphemeralSlot.
+	UpgradeRunnerAgent(ctx context.Context, org, name string, dl Download) error
+	// CachedAgentTarball reports whether dl's tarball is already present (and, when
+	// dl.SHA256 is set, checksum-valid) in the host cache. The upgrade engine checks
+	// it before a rollback so rollback never triggers a fresh, unverifiable download
+	// of a version whose checksum GitHub no longer publishes.
+	CachedAgentTarball(dl Download) bool
 	RemoveRunner(ctx context.Context, name, org, removeToken string) error
 	// AgentID reads the GitHub runner id the agent recorded locally in its .runner
 	// file at registration. This host-local, host-bound id is how a runner must be
@@ -896,6 +912,76 @@ func (u *ubuntu) CreateRunner(ctx context.Context, spec RunnerSpec, dl Download,
 	time.Sleep(2 * time.Second)
 	if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", svc).Run(); err != nil {
 		return fmt.Errorf("service %s not active after start", svc)
+	}
+	return nil
+}
+
+// CachedAgentTarball reports whether dl's tarball is already on disk in the host
+// cache, verifying its checksum when dl.SHA256 is set. See the interface doc.
+func (u *ubuntu) CachedAgentTarball(dl Download) bool {
+	path := u.cachePath(dl)
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() == 0 {
+		return false
+	}
+	if dl.SHA256 != "" {
+		ok, _ := verifySHA256(path, dl.SHA256)
+		return ok
+	}
+	return true
+}
+
+// UpgradeRunnerAgent swaps a persistent runner's agent binaries in place (see the
+// interface doc for the rationale). It stops the unit, overlays the new tarball
+// over the configured tree (which leaves .runner/.credentials/_work intact - the
+// tarball ships only bin/, externals/, and the helper scripts), re-asserts the
+// hardening drop-in, restarts, and self-tests.
+func (u *ubuntu) UpgradeRunnerAgent(ctx context.Context, org, name string, dl Download) error {
+	svc := u.svcName(org, name)
+	dir := u.runnerDir(org, name)
+	if !fileExists(filepath.Join("/etc/systemd/system", svc)) {
+		return fmt.Errorf("no installed unit for %s/%s on this host", org, name)
+	}
+	// Only upgrade a CONFIGURED runner: the swap deliberately keeps .runner, so a
+	// tree without one was never registered and must go through create, not upgrade.
+	if !fileExists(filepath.Join(dir, ".runner")) {
+		return fmt.Errorf("%s/%s has no .runner (not configured) - create it instead of upgrading", org, name)
+	}
+	// Never install an unverifiable agent. A forward upgrade carries dl.SHA256 (so
+	// ensureTarball downloads + verifies); a rollback passes an empty SHA256 but the
+	// prior tarball is already cached, so we accept the cached copy and never reach
+	// for an unverifiable download.
+	if dl.SHA256 == "" && !u.CachedAgentTarball(dl) {
+		return fmt.Errorf("refusing to upgrade %s/%s to an unverifiable agent: %s has no published checksum and is not in the host cache", org, name, filepath.Base(dl.URL))
+	}
+	tarball, err := u.ensureTarball(ctx, dl)
+	if err != nil {
+		return err
+	}
+
+	// Stop BEFORE overlaying so the running agent releases its binaries (and so a
+	// crash mid-extract can't be a live process reading a half-written file).
+	if err := run(ctx, "systemctl", "stop", svc); err != nil {
+		return fmt.Errorf("stop %s: %w", svc, err)
+	}
+	if err := extractTarGz(tarball, dir); err != nil {
+		return fmt.Errorf("extract runner: %w", err)
+	}
+	// The overlaid files land root-owned; hand the tree back to the runner user.
+	if err := run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, dir); err != nil {
+		return err
+	}
+	// Re-assert the drop-in (cheap; keeps the unit conformant if its template moved)
+	// and daemon-reload, then bring the runner back up.
+	if err := u.writeHardening(ctx, svc); err != nil {
+		return fmt.Errorf("hardening drop-in: %w", err)
+	}
+	if err := run(ctx, "systemctl", "start", svc); err != nil {
+		return fmt.Errorf("start %s: %w", svc, err)
+	}
+	time.Sleep(2 * time.Second)
+	if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", svc).Run(); err != nil {
+		return fmt.Errorf("service %s not active after upgrade", svc)
 	}
 	return nil
 }

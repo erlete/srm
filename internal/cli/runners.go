@@ -17,8 +17,107 @@ func newRunnersCmd() *cobra.Command {
 		Use:   "runners",
 		Short: "Create, list, and delete self-hosted runners",
 	}
-	cmd.AddCommand(newRunnersListCmd(), newRunnersCreateCmd(), newRunnersDeleteCmd(), newRunnersDestroyCmd(), newRunnersRefreshCmd())
+	cmd.AddCommand(newRunnersListCmd(), newRunnersCreateCmd(), newRunnersDeleteCmd(), newRunnersDestroyCmd(), newRunnersRefreshCmd(), newRunnersUpgradeCmd())
 	return cmd
+}
+
+func newRunnersUpgradeCmd() *cobra.Command {
+	var (
+		toVersion string
+		rollback  bool
+		force     bool
+	)
+	c := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Upgrade the actions/runner agent on local runners in place, idle-only (run as root on the host)",
+		Long: "Replaces the actions/runner agent binaries on THIS host's runners with a newer " +
+			"release, in place. Persistent runners keep their registration (the same swap the " +
+			"agent's own auto-update performs); ephemeral lanes are rebuilt between job cycles. " +
+			"Upgrades run one runner at a time - each is self-tested back to active (or rolled " +
+			"back to its prior version) before the next is touched, so at most one runner is " +
+			"ever offline.\n\n" +
+			"Busy runners and ephemeral lanes mid-cycle are skipped (re-run to catch them idle). " +
+			"With no --to-version the target is runnerVersionPin, else the version GitHub " +
+			"currently publishes; a target without a verifiable checksum is refused. Use --org " +
+			"to scope to one org, --dry-run to preview, --rollback to restore the prior version, " +
+			"and --force to re-install or allow a downgrade.",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			mgr, closeLog, err := buildManager()
+			if err != nil {
+				return err
+			}
+			defer closeLog()
+			if err := requireOrgs(mgr); err != nil {
+				return err
+			}
+			if flagOrg != "" {
+				if _, ok := mgr.Config().Org(flagOrg); !ok {
+					return fmt.Errorf("org %q not configured", flagOrg)
+				}
+			}
+			if rollback && toVersion != "" {
+				return fmt.Errorf("--rollback restores each runner's recorded previous version; it cannot be combined with --to-version")
+			}
+
+			results, errs := mgr.UpgradeLocalRunners(context.Background(), service.UpgradeOpts{
+				OrgFilter: flagOrg,
+				ToVersion: toVersion,
+				DryRun:    mgr.Config().DryRun,
+				Force:     force,
+				Rollback:  rollback,
+			})
+			// A corrupt manifest / bad arg aborts the whole pass under a sentinel key.
+			if e := errs["_state"]; e != nil {
+				return e
+			}
+			if e := errs["_arg"]; e != nil {
+				return e
+			}
+			for _, org := range mgr.OrgNames() {
+				if e := errs[org]; e != nil {
+					fmt.Printf("WARN %s: %v\n", org, e)
+				}
+			}
+			if e := errs["_ephemeral"]; e != nil {
+				fmt.Printf("WARN ephemeral: %v\n", e)
+			}
+
+			var upgraded, failed int
+			for _, r := range results {
+				switch {
+				case r.Err != nil:
+					failed++
+					tag := ""
+					if r.RolledBack {
+						tag = " (rolled back to " + r.From + ")"
+					}
+					fmt.Printf("FAIL %s %s/%s: %v%s\n", r.Kind, r.Org, r.Name, r.Err, tag)
+				case r.Skipped != "":
+					fmt.Printf("skip %s %s/%s: %s\n", r.Kind, r.Org, r.Name, r.Skipped)
+				case r.Upgraded:
+					upgraded++
+					fmt.Printf("ok   %s %s/%s: %s -> %s\n", r.Kind, r.Org, r.Name, orUnknownCLI(r.From), r.To)
+				}
+			}
+			fmt.Printf("\nupgraded %d local runner(s)\n", upgraded)
+			if failed > 0 {
+				return fmt.Errorf("%d upgrade(s) failed", failed)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&toVersion, "to-version", "", "target agent version (default: runnerVersionPin, else the version GitHub publishes)")
+	c.Flags().BoolVar(&rollback, "rollback", false, "restore each local runner to its recorded previous version")
+	c.Flags().BoolVar(&force, "force", false, "re-install at the same version and allow a downgrade")
+	return c
+}
+
+// orUnknownCLI renders an empty (unrecorded) version as "unknown" in command output.
+func orUnknownCLI(v string) string {
+	if v == "" {
+		return "unknown"
+	}
+	return v
 }
 
 func newRunnersCreateCmd() *cobra.Command {
@@ -175,7 +274,7 @@ func newRunnersListCmd() *cobra.Command {
 				rows = filtered
 			}
 
-			printRunnerRows(rows)
+			printRunnerRows(rows, mgr.LocalRunnerVersions())
 			return nil
 		},
 	}
@@ -184,9 +283,12 @@ func newRunnersListCmd() *cobra.Command {
 	return c
 }
 
-// printRunnerRows renders runners with ORG + MACHINE columns and a summary.
-func printRunnerRows(rows []service.RunnerWithOrg) {
-	fmt.Printf("%-16s %-12s %-30s %-8s %-5s %-8s %-7s %s\n", "ORG", "ID", "NAME", "STATUS", "JOB", "OS", "MACHINE", "LABELS")
+// printRunnerRows renders runners with ORG + VERSION + MACHINE columns and a
+// summary. versions maps RunnerVersionKey(org,name) to the recorded agent version
+// for runners this host installed; a runner with no recorded version (remote, or
+// created by an older srm) shows "-".
+func printRunnerRows(rows []service.RunnerWithOrg, versions map[string]string) {
+	fmt.Printf("%-16s %-12s %-30s %-8s %-5s %-8s %-9s %-7s %s\n", "ORG", "ID", "NAME", "STATUS", "JOB", "OS", "VERSION", "MACHINE", "LABELS")
 	counts := make(map[string]int)
 	var order []string
 	local := 0
@@ -201,8 +303,12 @@ func printRunnerRows(rows []service.RunnerWithOrg) {
 			machine = "this"
 			local++
 		}
-		fmt.Printf("%-16s %-12d %-30s %-8s %-5s %-8s %-7s %s\n",
-			row.Org, r.ID, r.Name, r.Status, job, r.OS, machine, labelNames(r.Labels))
+		ver := versions[service.RunnerVersionKey(row.Org, r.Name)]
+		if ver == "" {
+			ver = "-"
+		}
+		fmt.Printf("%-16s %-12d %-30s %-8s %-5s %-8s %-9s %-7s %s\n",
+			row.Org, r.ID, r.Name, r.Status, job, r.OS, ver, machine, labelNames(r.Labels))
 		if _, seen := counts[row.Org]; !seen {
 			order = append(order, row.Org)
 		}

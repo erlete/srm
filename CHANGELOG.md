@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`srm runners upgrade`** - in-place upgrade of the actions/runner AGENT on this
+  host's runners, the data-plane half of progressive updates. Persistent runners
+  keep their registration (the same binary swap the agent's own auto-update
+  performs - no token, labels, or group needed); ephemeral lanes are rebuilt
+  between job cycles. Upgrades run one runner at a time, each self-tested back to
+  active or rolled back to its prior (cached) version before the next is touched,
+  so at most one runner is ever offline. Busy runners and mid-cycle ephemeral lanes
+  are skipped. `--to-version` / `runnerVersionPin` pin a target (refused if its
+  checksum is not verifiable), `--rollback` restores the recorded prior version,
+  `--force` allows a re-install or downgrade, `--dry-run` previews.
+- **Host state manifest** (`/var/lib/srm/state.json`, root 0600) - records each
+  runner's installed agent version, its host-bound GitHub id, and unit template
+  generation. It is advisory: the live GitHub list and on-disk units remain the
+  source of truth, so an absent or stale manifest never skips a real runner (hosts
+  created by srm <= v1.3.0 are unaffected). It drives the upgrade safety gates
+  (skip-if-at-target, anti-downgrade, host-bound id) and the new version readouts.
+- **Agent version visibility** - `runners list` gains a `VERSION` column for
+  runners this host installed, and `doctor` reports when a newer agent is published.
+- **`runnerVersionPin`** config field - the explicit upgrade target, kept separate
+  from `runnerVersion` (which Load coerces to a default and so can never signal
+  "unpinned"). Empty means upgrades track the published version.
+
 ## [1.3.0] - 2026-06-21
 
 ### Added

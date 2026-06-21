@@ -74,6 +74,37 @@ func (m *Manager) linuxDownload(ctx context.Context, org string) (runner.Downloa
 	return runner.Download{}, fmt.Errorf("GitHub offered no linux/x64 runner download for %s", org)
 }
 
+// resolveDownload picks the agent tarball to install for an org, honoring an
+// optional explicit target version (from `--to-version` or runnerVersionPin).
+//
+// With no target (the create-time and unpinned-upgrade default) it returns the
+// linux/x64 download GitHub currently offers - byte-identical to the historical
+// behavior, and always carrying a publisher SHA256.
+//
+// With a target it INSISTS on a verified checksum. GitHub's runner-application
+// API only advertises the single current version, so a checksum is resolvable
+// exactly when the target equals what GitHub serves today. For any other version
+// (an older or future pin) we could synthesize the download URL but have no
+// trustworthy SHA256, so we REFUSE rather than install an unverifiable agent.
+// That is the safe failure: a pin is a deliberate act, and a deliberate act that
+// cannot be made safe should stop, not silently downgrade integrity.
+func (m *Manager) resolveDownload(ctx context.Context, org, target string) (runner.Download, error) {
+	dl, err := m.linuxDownload(ctx, org)
+	if err != nil {
+		return runner.Download{}, err
+	}
+	if target == "" {
+		return dl, nil
+	}
+	current := runner.VersionFromURL(dl.URL)
+	if target == current {
+		return dl, nil
+	}
+	return runner.Download{}, fmt.Errorf(
+		"cannot install runner agent %s with a verified checksum: GitHub currently publishes %s, and its API exposes a checksum only for that version - refusing to install an unverifiable agent (use --to-version %s, or omit the pin to track the published version)",
+		target, current, current)
+}
+
 // installRootFor resolves the host install root for an org: its configured
 // installRoot, else the package default. An unknown/empty org also yields the
 // default, which is what host-wide operations (e.g. cache prune) want.
@@ -175,6 +206,18 @@ func (m *Manager) CreateRunners(ctx context.Context, spec DeploySpec, progress c
 			return names, fmt.Errorf("create %s: %w", name, cerr)
 		}
 		names = append(names, name)
+		// Annotate the manifest with the installed agent version and the host-bound
+		// GitHub id read from the just-written .runner file. Advisory and best-effort:
+		// a record failure must never fail a create that already succeeded.
+		id, _ := orch.AgentID(org, name)
+		_ = m.recordCreated(RunnerRecord{
+			Kind:            KindPersistent,
+			Org:             org,
+			Name:            name,
+			GitHubRunnerID:  id,
+			AgentVersion:    runner.VersionFromURL(dl.URL),
+			TemplateVersion: runner.CurrentDropInVersion,
+		})
 	}
 	return names, nil
 }
@@ -292,6 +335,9 @@ func (m *Manager) DestroyRunner(ctx context.Context, org, name string) error {
 
 	// Host cleanup first (best-effort), then the authoritative API delete by id.
 	hostErr := orch.RemoveRunner(ctx, name, org, "")
+	// The on-disk tree is gone, so drop the manifest entry too (advisory; a failure
+	// here at worst leaves a stale entry that the next reconcile/list ignores).
+	_ = m.forget(KindPersistent, org, name)
 
 	if id == 0 {
 		// No host-local id to deregister by - do NOT fall back to a name lookup

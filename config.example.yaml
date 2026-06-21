@@ -20,8 +20,16 @@ schemaVersion: 1
 # Bulk-operation fan-out (kept well under GitHub's 100-concurrent secondary limit).
 concurrency: 8
 
-# Pinned actions/runner release installed by the orchestrator (v1).
+# actions/runner release installed by the orchestrator at CREATE time.
 runnerVersion: "2.335.1"
+
+# Optional explicit target for `srm runners upgrade` (when no --to-version is
+# given). Empty/omitted = unpinned: upgrades track the version GitHub publishes,
+# and create-time keeps using runnerVersion above. This is deliberately a separate
+# field - runnerVersion is always coerced to a default, so it can never mean
+# "unpinned". A pinned target is refused at upgrade time if its checksum is not
+# verifiable against what GitHub publishes.
+# runnerVersionPin: "2.335.1"
 
 # Dedicated non-login system user that owns runner dirs and runs the runner
 # services (runners never run as root). Created by `srm` provisioning (v1).

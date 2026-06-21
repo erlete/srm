@@ -217,9 +217,22 @@ type Config struct {
 	Orgs          []OrgConfig `koanf:"orgs" yaml:"orgs"`
 	DryRun        bool        `koanf:"dryRun" yaml:"dryRun"`
 	Concurrency   int         `koanf:"concurrency" yaml:"concurrency"`     // bulk-op fan-out, kept < 100
-	RunnerVersion string      `koanf:"runnerVersion" yaml:"runnerVersion"` // pinned default runner release
+	RunnerVersion string      `koanf:"runnerVersion" yaml:"runnerVersion"` // create-time default agent release
 	RunnerUser    string      `koanf:"runnerUser" yaml:"runnerUser"`       // dedicated non-login service user
-	LogFile       string      `koanf:"logFile" yaml:"logFile,omitempty"`
+
+	// RunnerVersionPin is the explicit target for `srm runners upgrade` when no
+	// --to-version is given. Empty (the default) means "no pin": upgrade tracks the
+	// version GitHub currently offers, and create-time keeps using RunnerVersion.
+	//
+	// It is a SEPARATE field from RunnerVersion, and unlike RunnerVersion it is NEVER
+	// coerced by Load: Load fills an empty RunnerVersion with DefaultRunnerVersion, so
+	// RunnerVersion can never read as "unset" and therefore can never signal an
+	// unpinned fleet - using it as the upgrade target would silently pin every host to
+	// the build-time default. RunnerVersionPin stays empty unless the operator writes
+	// it, so empty unambiguously means unpinned. See UpgradeTarget.
+	RunnerVersionPin string `koanf:"runnerVersionPin" yaml:"runnerVersionPin,omitempty"`
+
+	LogFile string `koanf:"logFile" yaml:"logFile,omitempty"`
 	// CacheRetentionDays is the default age cutoff for `srm cache prune` (delete
 	// build-tool cache entries not accessed in this many days). 0 = use the
 	// command's built-in default. Lets a cron'd prune be config-driven.
