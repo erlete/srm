@@ -58,6 +58,13 @@ single-host deployment:
   configure as a dedicated user, hardened systemd unit, ensure group),
   `runners destroy` (host teardown + deregister), org-aware `list`/`delete`,
   `runners refresh` (in-place drop-in / isolation migration).
+- **In-place agent upgrades** - `runners upgrade` swaps a persistent runner's
+  actions/runner binaries to a newer release without re-registering (the agent's own
+  auto-update mechanism), one runner at a time, each self-tested back to active or
+  rolled back to its prior agent (a rename-snapshot, so rollback never depends on the
+  cache). Busy runners are skipped. Versions are tracked in a root-only host manifest
+  (`/var/lib/srm/state.json`) and surfaced by `runners list` and `doctor`. (Ephemeral
+  lanes refresh their agent on recreate; in-place ephemeral upgrade is a follow-up.)
 - **Ephemeral (JIT) runners** - `runners create --ephemeral --count N` slot lanes
   that mint a fresh single-use registration per job (root mints → setpriv drop →
   one job → auto-deregister), `runners destroy --ephemeral --slot N`,
@@ -211,6 +218,7 @@ sudo srm runners create --ephemeral --count 10 --org acme \
 sudo srm runners destroy --ephemeral --slot 3 --org acme            # drain + remove a slot
 
 sudo srm runners refresh [--org acme]      # re-apply drop-ins (cache/caps/isolation); migrate in place
+sudo srm runners upgrade [--org acme]      # upgrade the runner AGENT in place, idle-only (--dry-run/--rollback/--to-version)
 sudo srm cache prune                       # evict stale build-tool cache entries
 sudo srm reconcile [--fix] [--org acme]    # audit host vs GitHub drift + health + OOM; --fix repairs host-side
 sudo srm reconcile --reap-ephemeral --org acme   # deregister offline JIT ghosts (gated)

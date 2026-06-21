@@ -140,6 +140,15 @@ func (m *Manager) CreateEphemeralRunners(ctx context.Context, spec DeploySpec, p
 			return slots, fmt.Errorf("create ephemeral slot %s: %w", slot, cerr)
 		}
 		slots = append(slots, slot)
+		// Record the lane's installed agent version (advisory; ephemeral lanes mint a
+		// fresh JIT id per cycle, so there is no stable GitHub id to record).
+		_ = m.recordCreated(RunnerRecord{
+			Kind:            KindEphemeral,
+			Org:             org,
+			Name:            slot,
+			AgentVersion:    runner.VersionFromURL(dl.URL),
+			TemplateVersion: runner.CurrentEphemeralVersion,
+		})
 	}
 	return slots, nil
 }
@@ -168,7 +177,10 @@ func (m *Manager) DestroyEphemeralSlot(ctx context.Context, org, slot string) er
 			}
 		}
 	}
-	return orch.RemoveEphemeralSlot(ctx, org, slot)
+	err = orch.RemoveEphemeralSlot(ctx, org, slot)
+	// The lane is gone; drop its manifest entry (advisory).
+	_ = m.forget(KindEphemeral, org, slot)
+	return err
 }
 
 // defaultGroupID resolves the runner group for an ephemeral slot when none was

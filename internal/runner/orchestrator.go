@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,13 @@ import (
 
 	"github.com/erlete/srm/internal/config"
 )
+
+// ErrRunnerDown is wrapped into the error UpgradeRunnerAgent returns when an upgrade
+// failed AND the subsequent rollback to the prior agent also failed - i.e. the runner
+// is left stopped/broken. A returned error WITHOUT this sentinel means the upgrade
+// failed but the runner was successfully restored to its prior agent (still serving).
+// Callers use errors.Is to tell "rolled back, fine" from "needs hands-on recovery".
+var ErrRunnerDown = errors.New("runner is down (rollback failed)")
 
 // AggregateSlice is the systemd slice that holds every srm runner so their
 // memory is bounded together (auto-capacity mode). See Options.Slice.
@@ -83,6 +91,22 @@ type RunnerSpec struct {
 type Orchestrator interface {
 	EnsureBase(ctx context.Context) error
 	CreateRunner(ctx context.Context, spec RunnerSpec, dl Download, regToken string) error
+	// UpgradeRunnerAgent replaces a persistent runner's agent BINARIES in place with
+	// the tarball described by dl, preserving its existing registration
+	// (.runner/.credentials) and _work, then restarts the unit and self-tests that it
+	// came back active. This is the same swap the actions/runner auto-updater performs,
+	// so it needs no registration token, labels, or group - and rollback is just the
+	// same call with the prior version's (cached) tarball. The caller MUST have
+	// confirmed the runner is idle; on failure the runner is left stopped/partially
+	// swapped for the caller to roll back. Refuses an unverifiable tarball (see
+	// CachedAgentTarball). Persistent runners only; ephemeral lanes upgrade via
+	// EnsureEphemeralSlot.
+	UpgradeRunnerAgent(ctx context.Context, org, name string, dl Download) error
+	// CachedAgentTarball reports whether dl's tarball is already present (and, when
+	// dl.SHA256 is set, checksum-valid) in the host cache. The upgrade engine checks
+	// it before a rollback so rollback never triggers a fresh, unverifiable download
+	// of a version whose checksum GitHub no longer publishes.
+	CachedAgentTarball(dl Download) bool
 	RemoveRunner(ctx context.Context, name, org, removeToken string) error
 	// AgentID reads the GitHub runner id the agent recorded locally in its .runner
 	// file at registration. This host-local, host-bound id is how a runner must be
@@ -390,15 +414,33 @@ func (u *ubuntu) ensureCacheDirs(ctx context.Context) error {
 	return run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, u.opts.CacheRoot)
 }
 
+// agentCacheRoot holds the downloaded actions/runner agent tarballs. It is
+// deliberately a ROOT-OWNED 0700 directory OUTSIDE any runner tree: the tarball is
+// extracted and run as root, so it must never live where untrusted job code can
+// reach it. The historical location ({installRoot}/.cache) doubled as the runner
+// user's $HOME/.cache (job-writable in single-user mode), which let job code swap a
+// cached tarball that a later rollback would install as root - so the cache is host
+// global here instead (one download serves every org). See ensureTarball.
+const agentCacheRoot = "/var/lib/srm/agent-cache"
+
 func (u *ubuntu) cachePath(dl Download) string {
 	base := filepath.Base(dl.URL)
 	if base == "" || base == "." || base == "/" {
 		base = "actions-runner.tar.gz"
 	}
-	return filepath.Join(u.installRoot, ".cache", base)
+	return filepath.Join(agentCacheRoot, base)
 }
 
 func (u *ubuntu) ensureTarball(ctx context.Context, dl Download) (string, error) {
+	// Force the cache dir to root-only 0700 (MkdirAll won't downgrade an existing
+	// dir's mode, so re-assert it - a host upgraded from an older srm may have a
+	// looser one). This is the integrity boundary for every tarball srm extracts.
+	if err := os.MkdirAll(agentCacheRoot, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(agentCacheRoot, 0o700); err != nil {
+		return "", err
+	}
 	path := u.cachePath(dl)
 	if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
 		if dl.SHA256 == "" {
@@ -864,9 +906,14 @@ func (u *ubuntu) CreateRunner(ctx context.Context, spec RunnerSpec, dl Download,
 		}
 	}
 
-	// configure as the dedicated user (the agent refuses to run as root)
+	// configure as the dedicated user (the agent refuses to run as root).
+	// --disableupdate turns OFF the agent's built-in auto-updater: srm owns runner
+	// versions (`srm runners upgrade`), so the agent must not silently self-update
+	// out from under the state manifest, which would desync the version the upgrade
+	// gates (skip-if-at-target, anti-downgrade) read. GitHub still schedules jobs to a
+	// pinned-version runner; srm is responsible for keeping it current.
 	args := []string{"-u", u.opts.User, "--", "env", "RUNNER_ALLOW_RUNASROOT=0", "./config.sh",
-		"--unattended", "--replace", "--url", spec.URL, "--token", regToken,
+		"--unattended", "--replace", "--disableupdate", "--url", spec.URL, "--token", regToken,
 		"--name", spec.Name, "--labels", strings.Join(spec.Labels, ","), "--work", "_work"}
 	if spec.Group != "" {
 		args = append(args, "--runnergroup", spec.Group)
@@ -898,6 +945,198 @@ func (u *ubuntu) CreateRunner(ctx context.Context, spec RunnerSpec, dl Download,
 		return fmt.Errorf("service %s not active after start", svc)
 	}
 	return nil
+}
+
+// CachedAgentTarball reports whether dl's tarball is already on disk in the host
+// cache, verifying its checksum when dl.SHA256 is set. See the interface doc.
+func (u *ubuntu) CachedAgentTarball(dl Download) bool {
+	path := u.cachePath(dl)
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() == 0 {
+		return false
+	}
+	if dl.SHA256 != "" {
+		ok, _ := verifySHA256(path, dl.SHA256)
+		return ok
+	}
+	return true
+}
+
+// agentPayloadDirs are the version-specific directories the runner tarball fully
+// replaces. They are snapshotted (renamed aside) before an upgrade and restored on
+// failure - everything else in the tree (.runner/.credentials/_work/_diag and the
+// thin top-level scripts) is registration/runtime state that survives the swap.
+var agentPayloadDirs = []string{"bin", "externals"}
+
+const snapshotSuffix = ".srm-prev"
+
+// UpgradeRunnerAgent swaps a persistent runner's agent binaries in place, preserving
+// its registration. The version-specific payload (bin/, externals/) is RENAMED aside
+// as a snapshot, the new tarball is extracted clean (no stale files mixed in), and
+// the unit is restarted and self-tested. On ANY failure the snapshot is renamed back
+// and the runner restarted, so a failed upgrade leaves it on its prior, working
+// agent - the rollback is a local rename, independent of the download cache or the
+// recorded version (so it works even for a runner srm has no manifest entry for).
+func (u *ubuntu) UpgradeRunnerAgent(ctx context.Context, org, name string, dl Download) error {
+	svc := u.svcName(org, name)
+	dir := u.runnerDir(org, name)
+	if !fileExists(filepath.Join("/etc/systemd/system", svc)) {
+		return fmt.Errorf("no installed unit for %s/%s on this host", org, name)
+	}
+	// Only upgrade a CONFIGURED runner: the swap deliberately keeps .runner, so a
+	// tree without one was never registered and must go through create, not upgrade.
+	if !fileExists(filepath.Join(dir, ".runner")) {
+		return fmt.Errorf("%s/%s has no .runner (not configured) - create it instead of upgrading", org, name)
+	}
+	// Never install an unverifiable agent. A forward upgrade carries dl.SHA256 (so
+	// ensureTarball downloads + verifies); an explicit rollback to an older version
+	// passes an empty SHA256 but the prior tarball must already be in the root-only
+	// cache, so we accept the cached copy and never reach for an unverifiable download.
+	if dl.SHA256 == "" && !u.CachedAgentTarball(dl) {
+		return fmt.Errorf("refusing to upgrade %s/%s to an unverifiable agent: %s has no published checksum and is not in the host cache", org, name, filepath.Base(dl.URL))
+	}
+	tarball, err := u.ensureTarball(ctx, dl)
+	if err != nil {
+		return err
+	}
+
+	// Recover from any snapshot a previously-crashed upgrade left behind, so the tree
+	// is whole before we touch it.
+	recoverAgentSnapshot(dir)
+
+	// Stop BEFORE swapping so the running agent releases its binaries.
+	if err := run(ctx, "systemctl", "stop", svc); err != nil {
+		return fmt.Errorf("stop %s: %w", svc, err)
+	}
+	// Snapshot the version-specific payload aside (rename = instant, same filesystem).
+	if err := snapshotAgentPayload(dir); err != nil {
+		_ = run(ctx, "systemctl", "start", svc) // bring the (untouched) old agent back
+		return fmt.Errorf("snapshot current agent: %w", err)
+	}
+	// Extract the new payload clean, chown, re-assert the drop-in, and start. Any
+	// failure here (or in the self-test below) rolls the snapshot back.
+	swapErr := func() error {
+		if err := extractTarGz(tarball, dir); err != nil {
+			return fmt.Errorf("extract runner: %w", err)
+		}
+		if err := run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, dir); err != nil {
+			return err
+		}
+		if err := u.writeHardening(ctx, svc); err != nil {
+			return fmt.Errorf("hardening drop-in: %w", err)
+		}
+		if err := run(ctx, "systemctl", "start", svc); err != nil {
+			return fmt.Errorf("start %s: %w", svc, err)
+		}
+		// Self-test: a Type=simple unit reports active the instant it forks, before the
+		// .NET agent loads and connects, so a single sample is meaningless. Require it
+		// to STAY up without a restart for a window instead.
+		return u.waitActive(ctx, svc)
+	}()
+
+	if swapErr != nil {
+		// Roll back to the snapshotted agent and bring it up.
+		_ = run(ctx, "systemctl", "stop", svc)
+		restoreErr := restoreAgentPayload(dir)
+		_ = run(ctx, "systemctl", "start", svc)
+		if restoreErr != nil {
+			return fmt.Errorf("upgrade failed (%v); rollback also failed (%v): %w", swapErr, restoreErr, ErrRunnerDown)
+		}
+		return fmt.Errorf("upgrade failed and was rolled back to the prior agent: %w", swapErr)
+	}
+
+	// Success: discard the snapshot.
+	discardAgentSnapshot(dir)
+	return nil
+}
+
+// snapshotAgentPayload renames bin/ and externals/ aside (to <name>.srm-prev) so the
+// new tarball extracts onto a clean tree and the old payload can be restored.
+func snapshotAgentPayload(dir string) error {
+	for _, sub := range agentPayloadDirs {
+		src := filepath.Join(dir, sub)
+		bak := src + snapshotSuffix
+		_ = os.RemoveAll(bak) // clear any stale leftover
+		if fileExists(src) {
+			if err := os.Rename(src, bak); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// restoreAgentPayload removes the freshly-extracted payload and renames the snapshot
+// back, undoing snapshotAgentPayload.
+func restoreAgentPayload(dir string) error {
+	for _, sub := range agentPayloadDirs {
+		dst := filepath.Join(dir, sub)
+		bak := dst + snapshotSuffix
+		if fileExists(bak) {
+			_ = os.RemoveAll(dst)
+			if err := os.Rename(bak, dst); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// discardAgentSnapshot removes the snapshot after a successful upgrade.
+func discardAgentSnapshot(dir string) {
+	for _, sub := range agentPayloadDirs {
+		_ = os.RemoveAll(filepath.Join(dir, sub) + snapshotSuffix)
+	}
+}
+
+// recoverAgentSnapshot makes the tree whole after an upgrade that crashed mid-swap:
+// if a payload dir is missing but its snapshot exists, the snapshot is restored;
+// otherwise a leftover snapshot is discarded.
+func recoverAgentSnapshot(dir string) {
+	for _, sub := range agentPayloadDirs {
+		live := filepath.Join(dir, sub)
+		bak := live + snapshotSuffix
+		if !fileExists(bak) {
+			continue
+		}
+		if !fileExists(live) {
+			_ = os.Rename(bak, live)
+		} else {
+			_ = os.RemoveAll(bak)
+		}
+	}
+}
+
+// waitActive polls a unit for ~24s and fails if it restarts (crash-loop) or enters a
+// failed/inactive state - a far stronger check than a single is-active sample, which
+// a Type=simple unit passes the instant it forks (before the agent can fault).
+func (u *ubuntu) waitActive(ctx context.Context, svc string) error {
+	base := u.nRestarts(ctx, svc)
+	for i := 0; i < 12; i++ {
+		time.Sleep(2 * time.Second)
+		if u.nRestarts(ctx, svc) > base {
+			return fmt.Errorf("service %s restarted (crash-loop) after start", svc)
+		}
+		switch u.activeState(ctx, svc) {
+		case "failed", "inactive":
+			return fmt.Errorf("service %s entered a failed state after start", svc)
+		}
+	}
+	if err := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", svc).Run(); err != nil {
+		return fmt.Errorf("service %s not active after start", svc)
+	}
+	return nil
+}
+
+func (u *ubuntu) nRestarts(ctx context.Context, svc string) int {
+	out, _ := exec.CommandContext(ctx, "systemctl", "show", "-p", "NRestarts", "--value", svc).Output()
+	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	return n
+}
+
+func (u *ubuntu) activeState(ctx context.Context, svc string) string {
+	out, _ := exec.CommandContext(ctx, "systemctl", "show", "-p", "ActiveState", "--value", svc).Output()
+	return strings.TrimSpace(string(out))
 }
 
 // RemoveRunner stops + uninstalls the service, deregisters if a remove token is

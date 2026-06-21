@@ -76,6 +76,18 @@ func newDoctorCmd() *cobra.Command {
 				} else {
 					fmt.Printf("limits:      %s\n", limitsLine(res))
 				}
+				// Agent freshness (best-effort, observational). state.json is root-only,
+				// so without root `total` reads 0 and we just report the published version.
+				if cur, total, behind, ok := mgr.AgentVersionStatus(ctx, org); ok {
+					switch {
+					case len(behind) > 0:
+						fmt.Printf("agent:       update available -> %s; behind: %s (run `srm runners upgrade`)\n", cur, strings.Join(behind, ", "))
+					case total > 0:
+						fmt.Printf("agent:       up to date (%s)\n", cur)
+					default:
+						fmt.Printf("agent:       GitHub publishes %s\n", cur)
+					}
+				}
 			}
 
 			// Host toolchain probe - self-hosted runners ship bare, so jobs that
