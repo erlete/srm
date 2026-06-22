@@ -34,11 +34,47 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Build (linux/amd64 - the only supported target)
+      - name: Build (linux/amd64 - the primary supported target)
         env:
           GOOS: linux
           GOARCH: amd64
         run: go build ./...
+
+      # Cross-compile the whole module for Windows from this linux runner. The linux
+      # build/test above selects the *_other.go / *_linux.go files, so the genuine
+      # Windows syscall files (*_windows.go - svc/mgr, Job Objects, registry, elevation)
+      # are compiled NOWHERE in the linux pipeline without this step. One codebase, two
+      # GOOS: this guards that the Windows build of internal/* still compiles.
+      - name: Cross-compile for Windows (windows/amd64)
+        env:
+          GOOS: windows
+          GOARCH: amd64
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+  windows:
+    # Native windows/amd64 build + test. The linux job cross-compiles the Windows code,
+    # but only a real Windows runner exercises the *_windows.go syscall paths at compile
+    # AND runtime and runs the windows-only unit tests. These are non-elevated unit
+    # tests; the privileged write paths (services, ACLs) are validated live on the host.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build (windows/amd64, native)
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
 
       - name: Test
         run: go test ./...

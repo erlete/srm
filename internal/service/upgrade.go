@@ -311,7 +311,7 @@ func orUnknown(v string) string {
 // version (0 when run without root, since state.json is root-only), and behind
 // lists those older than current. It NEVER mutates anything.
 func (m *Manager) AgentVersionStatus(ctx context.Context, org string) (current string, total int, behind []string, ok bool) {
-	dl, err := m.linuxDownload(ctx, org)
+	dl, err := m.agentDownload(ctx, org)
 	if err != nil {
 		return "", 0, nil, false
 	}

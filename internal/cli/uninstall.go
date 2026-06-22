@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -71,10 +72,10 @@ func newUninstallCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "skip the typed-hostname confirmation (for automation)")
 	cmd.Flags().BoolVar(&force, "force", false, "proceed even if a runner is busy or a lane is mid-cycle")
-	cmd.Flags().BoolVar(&keepConfig, "keep-config", false, "preserve /etc/srm even with --purge")
+	cmd.Flags().BoolVar(&keepConfig, "keep-config", false, fmt.Sprintf("preserve %s even with --purge", filepath.Dir(systemConfigPath)))
 	cmd.Flags().BoolVar(&keepBinary, "keep-binary", false, "preserve the srm binary")
 	cmd.Flags().BoolVar(&keepGitHub, "keep-github", false, "host-side teardown only; make no GitHub calls")
-	cmd.Flags().BoolVar(&purge, "purge", false, "also remove /etc/srm (config + App keys) after an automatic backup")
+	cmd.Flags().BoolVar(&purge, "purge", false, fmt.Sprintf("also remove %s (config + App keys) after an automatic backup", filepath.Dir(systemConfigPath)))
 	return cmd
 }
 

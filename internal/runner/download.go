@@ -1,7 +1,8 @@
-// Package runner orchestrates the on-machine actions/runner agent on Ubuntu
-// x64 hosts (systemd + apt). The download/dotenv/unit-name helpers are pure and
-// implemented now; the agent install/register/supervise/remove flow is stubbed
-// for v1 (see orchestrator.go).
+// Package runner orchestrates the on-machine actions/runner agent. On Linux it uses
+// systemd + apt (see orchestrator.go); on Windows the Service Control Manager +
+// config.cmd/run.cmd (see windows.go). The download/dotenv/unit-name helpers are
+// pure and OS-agnostic; the os/arch-specific archive name lives in
+// download_{linux,windows}.go.
 package runner
 
 import (
@@ -13,33 +14,29 @@ import (
 
 const releaseBase = "https://github.com/actions/runner/releases/download"
 
-// assetPrefix / assetSuffix bracket the version inside a linux-x64 tarball name
-// (actions-runner-linux-x64-<version>.tar.gz). VersionFromURL is the inverse of
+// assetPrefix / assetSuffix bracket the version inside the os/arch archive name
+// (actions-runner-<os>-x64-<version>.<ext>) and are defined per OS in
+// download_linux.go / download_windows.go. VersionFromURL is the inverse of
 // AssetName, so they must stay in lockstep - TestVersionFromURL round-trips them.
-const (
-	assetPrefix = "actions-runner-linux-x64-"
-	assetSuffix = ".tar.gz"
-)
 
-// DownloadURL returns the actions/runner tarball URL for linux-x64 at the given
-// version (without a leading "v"). The tool targets Ubuntu x64 only, so the
-// os/arch is fixed.
+// DownloadURL returns the actions/runner archive URL for this OS's x64 build at the
+// given version (without a leading "v"). The os/arch is fixed per build.
 func DownloadURL(version string) string {
 	return fmt.Sprintf("%s/v%s/%s", releaseBase, version, AssetName(version))
 }
 
-// AssetName is the tarball filename for a runner version.
+// AssetName is the archive filename for a runner version (os/arch fixed per build).
 func AssetName(version string) string {
 	return assetPrefix + version + assetSuffix
 }
 
 // VersionFromURL extracts the agent version (e.g. "2.335.1") from a runner
 // download URL or bare asset name by peeling AssetName's prefix/suffix off the
-// final path segment. It returns "" when the name doesn't match the linux-x64
-// asset shape (an unrecognised URL, or a different os/arch), so callers treat the
-// version as unknown rather than recording a bogus one. Query/fragment suffixes
-// are tolerated. This is the create-time source of the agentVersion recorded in
-// the state manifest.
+// final path segment. It returns "" when the name doesn't match this build's
+// os/arch asset shape (an unrecognised URL, or a different os/arch), so callers
+// treat the version as unknown rather than recording a bogus one. Query/fragment
+// suffixes are tolerated. This is the create-time source of the agentVersion
+// recorded in the state manifest.
 func VersionFromURL(url string) string {
 	base := path.Base(url)
 	if i := strings.IndexAny(base, "?#"); i >= 0 {

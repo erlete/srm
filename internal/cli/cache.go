@@ -6,12 +6,14 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/erlete/srm/internal/config"
 )
 
 func newCacheCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cache",
-		Short: "Manage the host's shared build-tool caches (/opt/srm-cache)",
+		Short: fmt.Sprintf("Manage the host's shared build-tool caches (%s)", config.DefaultCacheRoot),
 	}
 	cmd.AddCommand(newCachePruneCmd())
 	return cmd
@@ -21,11 +23,11 @@ func newCachePruneCmd() *cobra.Command {
 	var maxAgeDays int
 	c := &cobra.Command{
 		Use:   "prune",
-		Short: "Evict build-tool cache entries not accessed in N days (run as root on the host; honors --dry-run)",
-		Long: "Frees disk by deleting dependency-cache files under /opt/srm-cache that haven't " +
-			"been accessed within the retention window. The package managers re-fetch any pruned " +
-			"entry on next use, so this is safe to run (e.g. from cron). The shared tool cache " +
-			"(/opt/hostedtoolcache) is not touched. Use --dry-run to preview.",
+		Short: "Evict build-tool cache entries not accessed in N days (run elevated on the host; honors --dry-run)",
+		Long: fmt.Sprintf("Frees disk by deleting dependency-cache files under %s that haven't "+
+			"been accessed within the retention window. The package managers re-fetch any pruned "+
+			"entry on next use, so this is safe to run (e.g. from cron or a scheduled task). The shared "+
+			"tool cache (%s) is not touched. Use --dry-run to preview.", config.DefaultCacheRoot, config.DefaultToolCacheRoot),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			mgr, closeLog, err := buildManager()
 			if err != nil {

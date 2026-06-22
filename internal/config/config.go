@@ -10,6 +10,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/knadh/koanf/parsers/yaml"
@@ -153,6 +154,42 @@ type HardeningConfig struct {
 	ProtectProc bool `koanf:"protectProc" yaml:"protectProc,omitempty"`
 }
 
+// DockerConfig controls whether the ephemeral lane gives jobs a Docker daemon to
+// build against. The default (zero value) is unchanged: srm ships runners bare
+// with no daemon, and a job that runs `docker`/buildx fails at the socket - the
+// host has no root daemon the per-org runner user may touch.
+//
+// RootlessDinD turns on a per-JOB ROOTLESS dockerd: each ephemeral cycle starts a
+// dockerd-rootless under the per-org runner user (its own user namespace, socket
+// under /run/srm/dind/<org>/<slot>), srm injects DOCKER_HOST at it, and the daemon
+// + its data-root are torn down and wiped on cycle reset. Jobs build images with
+// NO host root and NO shared docker group, and nothing (image layers, build cache,
+// registry creds) leaks between jobs. The consumer workflow is unchanged - the
+// default buildx docker-container driver connects to the injected DOCKER_HOST.
+//
+// It requires host prerequisites srm does not install by default (rootless docker
+// binaries, uidmap, slirp4netns, fuse-overlayfs, unprivileged-userns sysctls) plus
+// a per-user subuid/subgid range (allocated by EnsureBase). `srm doctor` probes
+// these so a misprovisioned host fails loudly, not mid-job.
+type DockerConfig struct {
+	// RootlessDinD enables the per-job rootless dockerd sidecar on ephemeral slots.
+	RootlessDinD bool `koanf:"rootlessDinD" yaml:"rootlessDinD,omitempty"`
+	// BuildkitImage overrides the BuildKit image srm pre-seeds the buildx builder
+	// with so the default docker-container driver works against the rootless daemon
+	// with no workflow change. Use the STANDARD image (NOT the "-rootless" tag): the
+	// builder runs as a container INSIDE the already-rootless daemon, so the -rootless
+	// image's own rootlesskit double-nests and fails to write a uid_map; the standard
+	// image plus --oci-worker-no-process-sandbox (srm passes it) is the working combo
+	// (validated live). Empty uses DefaultRootlessBuildkitImage. Ignored when off.
+	BuildkitImage string `koanf:"buildkitImage" yaml:"buildkitImage,omitempty"`
+}
+
+// DefaultRootlessBuildkitImage is the BuildKit image srm pins the pre-seeded buildx
+// builder to when RootlessDinD is on and no override is set. The STANDARD image (not
+// -rootless): inside a rootless daemon the -rootless image double-nests userns and
+// fails; the standard image + --oci-worker-no-process-sandbox builds correctly.
+const DefaultRootlessBuildkitImage = "moby/buildkit:buildx-stable-1"
+
 // slug normalizes an org name into a valid lowercase Linux username component
 // (lowercase letters, digits, '-'). It is used ONLY to mint the per-org service
 // username ("srm-<slug>"); on-disk paths and systemd unit names keep the verbatim
@@ -190,7 +227,7 @@ func (c *Config) CacheRootFor(org string) string {
 	if !c.Isolation.PerOrgUsers || org == "" {
 		return ""
 	}
-	return DefaultCacheRoot + "/" + org
+	return filepath.Join(DefaultCacheRoot, org)
 }
 
 // ToolCacheFor returns the tool-cache root (RUNNER_TOOL_CACHE) for an org. In
@@ -202,7 +239,7 @@ func (c *Config) ToolCacheFor(org string) string {
 	if !c.Isolation.PerOrgUsers || org == "" {
 		return ""
 	}
-	return DefaultToolCacheRoot + "/" + org
+	return filepath.Join(DefaultToolCacheRoot, org)
 }
 
 // Config is the fully-resolved tool configuration.
@@ -271,35 +308,21 @@ type Config struct {
 	// HardeningConfig.
 	Hardening HardeningConfig `koanf:"hardening" yaml:"hardening,omitempty"`
 
+	// Docker controls whether ephemeral jobs get a (rootless) Docker daemon to
+	// build against. Zero value (default) = no daemon, byte-identical to before.
+	// See DockerConfig.
+	Docker DockerConfig `koanf:"docker" yaml:"docker,omitempty"`
+
 	// Host is the host-once dependency manifest applied by `srm provision`
 	// (apt packages, setup scripts, persistent cache paths). Self-hosted runners
 	// ship bare, so the job toolchain (Node, Python, …) lives here.
 	Host core.DependencyManifest `koanf:"host" yaml:"host,omitempty"`
 }
 
-// Defaults follow mainstream, secure host conventions: FHS /opt for runner
-// trees, a dedicated non-login service user (runners never run as root), and a
-// root-only key directory.
-const (
-	// DefaultRunnerVersion is the pinned actions/runner release installed unless overridden.
-	DefaultRunnerVersion = "2.335.1"
-	// DefaultRunnerUser is the dedicated non-login system user that owns runner
-	// directories and runs the runner services.
-	DefaultRunnerUser = "srm"
-	// DefaultInstallRoot is the FHS-friendly parent dir for per-runner trees.
-	DefaultInstallRoot = "/opt/actions-runners"
-	// DefaultToolCacheRoot is the host-wide tool cache (RUNNER_TOOL_CACHE). All
-	// runners point AGENT_TOOLSDIRECTORY here so a version one runner downloads
-	// (or `srm provision` seeds) is reused by every runner - like the GitHub-
-	// hosted image's /opt/hostedtoolcache.
-	DefaultToolCacheRoot = "/opt/hostedtoolcache"
-	// DefaultCacheRoot is the host-wide build-tool cache root. srm points each
-	// package manager's cache env var (see ToolCacheEnv) at a subdir here, so jobs
-	// reuse host-persistent dependency caches across runs - and across all runners
-	// on the host - instead of GitHub's 10 GB/repo cache service. No workflow
-	// changes needed: these are consumed by tools running in `run:` steps.
-	DefaultCacheRoot = "/opt/srm-cache"
-)
+// DefaultRunnerVersion is the pinned actions/runner release installed unless overridden.
+// It is OS-agnostic; the host-layout roots and the runner user differ per OS and live
+// in defaults_linux.go / defaults_windows.go.
+const DefaultRunnerVersion = "2.335.1"
 
 // EnvVar is a name/value environment entry written into a runner's systemd unit.
 type EnvVar struct{ Key, Val string }

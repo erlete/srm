@@ -383,13 +383,15 @@ func TestResolutionIsolatedMode(t *testing.T) {
 	if u := cfg.RunnerUserFor("Globex"); u != "cd-runner" {
 		t.Errorf("org RunnerUser override lost: %q", u)
 	}
-	if r := cfg.CacheRootFor("Acme"); r != "/opt/srm-cache/Acme" {
-		t.Errorf("CacheRootFor(Acme) = %q", r)
+	// OS-agnostic: the per-org cache/tool roots are DefaultCacheRoot/DefaultToolCacheRoot
+	// joined with the org (which differ per OS), so assert against the same join.
+	if r, want := cfg.CacheRootFor("Acme"), filepath.Join(DefaultCacheRoot, "Acme"); r != want {
+		t.Errorf("CacheRootFor(Acme) = %q, want %q", r, want)
 	}
-	if r := cfg.ToolCacheFor("Acme"); r != "/opt/hostedtoolcache/Acme" {
-		t.Errorf("ToolCacheFor(Acme) = %q", r)
+	if r, want := cfg.ToolCacheFor("Acme"), filepath.Join(DefaultToolCacheRoot, "Acme"); r != want {
+		t.Errorf("ToolCacheFor(Acme) = %q, want %q", r, want)
 	}
-	// Empty org (host-wide callers) must not produce "/opt/srm-cache/".
+	// Empty org (host-wide callers) must not produce a trailing-separator root.
 	if r := cfg.CacheRootFor(""); r != "" {
 		t.Errorf("CacheRootFor(\"\") = %q, want empty", r)
 	}

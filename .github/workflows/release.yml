@@ -33,6 +33,12 @@ jobs:
       - name: Build release artifact (dist/srm-${VERSION}-ubuntu-x64 + .sha256)
         run: make release VERSION="$VERSION"
 
+      # The Windows x64 build (the same cmd/srm, GOOS=windows) cross-compiles cleanly
+      # from this same linux/amd64 runner (CGO off, pure-Go deps), so no separate Windows
+      # job is needed to publish it. install.ps1 consumes the .exe + .sha256 pair.
+      - name: Build Windows artifact (dist/srm-${VERSION}-windows-x64.exe + .sha256)
+        run: make release-windows VERSION="$VERSION"
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -40,6 +46,8 @@ jobs:
           gh release create "$VERSION" \
             "dist/srm-$VERSION-ubuntu-x64" \
             "dist/srm-$VERSION-ubuntu-x64.sha256" \
+            "dist/srm-$VERSION-windows-x64.exe" \
+            "dist/srm-$VERSION-windows-x64.exe.sha256" \
             --title "$VERSION" \
-            --notes "Static linux/amd64 (Ubuntu x64) build. See CHANGELOG.md for details. Verify with the attached .sha256." \
+            --notes "Static linux/amd64 (Ubuntu x64) and windows/amd64 (Windows x64) builds. Install on Ubuntu with install.sh, on Windows with install.ps1. See CHANGELOG.md for details. Verify with the attached .sha256 files." \
             --verify-tag

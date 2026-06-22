@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/erlete/srm/internal/config"
@@ -45,9 +47,9 @@ const (
 	EphemeralNamePrefix = "srm-eph-"
 )
 
-// DefaultSelfExe is where srm is installed on the host; an ephemeral slot unit's
-// ExecStart calls it. Overridable via Options.SelfExe (e.g. os.Executable()).
-const DefaultSelfExe = "/usr/local/bin/srm"
+// DefaultSelfExe (where srm is installed on the host; an ephemeral slot unit's
+// ExecStart calls it, overridable via Options.SelfExe), agentCacheRoot, and
+// ephemeralStateRoot differ per OS and live in paths_linux.go / paths_windows.go.
 
 // EphemeralSvcName is the systemd unit name for an ephemeral slot lane.
 func EphemeralSvcName(org, slot string) string {
@@ -209,12 +211,35 @@ type Options struct {
 	// ExecStart (srm _runner-cycle ...). Empty falls back to DefaultSelfExe. Only
 	// consulted by renderEphemeralUnit.
 	SelfExe string
+	// ConfigPath is the config file the running srm loaded from. It is baked into
+	// the ephemeral slot unit's `srm _runner-cycle --config <path>` ExecStart so the
+	// systemd-launched cycle loads the SAME config the operator created the lane with,
+	// not whatever default resolution finds. This matters for any per-lane config that
+	// only lives in a non-default file - notably docker.rootlessDinD: without the bake,
+	// a DinD lane created against a custom --config would silently run with the daemon
+	// OFF (the cycle would read the default /etc/srm/config.yaml, which lacks the docker
+	// block). Empty = rely on default resolution (back-compat). Mirrors the Windows
+	// supervisor's --config bake. Only consulted by renderEphemeralUnit.
+	ConfigPath string
 	// ProtectProc, when true, adds ProtectProc=invisible to the PERSISTENT runner
 	// drop-in (ephemeral units already set it unconditionally). It hides other
 	// users' /proc entries, closing the residual same-host cross-unit
 	// /proc/<pid>/cmdline window. Opt-in (default off) so the default drop-in stays
 	// byte-identical to the historical output.
 	ProtectProc bool
+	// DinD turns on the per-job rootless Docker sidecar for ephemeral slots. When
+	// set: EnsureBase allocates the runner user a subuid/subgid range, the slot unit
+	// uses the relaxed DinD hardening variant (rootless dockerd cannot start under
+	// NoNewPrivileges / read-only cgroups), and each RunJob cycle starts a rootless
+	// dockerd as the per-org user, injects DOCKER_HOST at it, and tears it down +
+	// wipes its data-root on reset. Only consulted on the ephemeral lane; ignored by
+	// the persistent drop-in (which never starts a daemon). Default off = no daemon,
+	// byte-identical to before.
+	DinD bool
+	// BuildkitImage is the rootless BuildKit image the per-job builder is pre-seeded
+	// with (see config.DefaultRootlessBuildkitImage). Only consulted when DinD is set;
+	// NewUbuntu fills the default when empty.
+	BuildkitImage string
 }
 
 type ubuntu struct {
@@ -236,6 +261,9 @@ func NewUbuntu(installRoot string, opts Options) Orchestrator {
 	if opts.CacheRoot == "" {
 		opts.CacheRoot = config.DefaultCacheRoot
 	}
+	if opts.DinD && opts.BuildkitImage == "" {
+		opts.BuildkitImage = config.DefaultRootlessBuildkitImage
+	}
 	return &ubuntu{installRoot: installRoot, opts: opts}
 }
 
@@ -253,9 +281,21 @@ func run(ctx context.Context, name string, args ...string) error {
 // pre-isolation code so single-user behavior is byte-for-byte unchanged.
 func (u *ubuntu) EnsureBase(ctx context.Context) error {
 	if u.opts.Isolated {
-		return u.ensureBaseIsolated(ctx)
+		if err := u.ensureBaseIsolated(ctx); err != nil {
+			return err
+		}
+	} else if err := u.ensureBaseLegacy(ctx); err != nil {
+		return err
 	}
-	return u.ensureBaseLegacy(ctx)
+	// Rootless DinD needs a subordinate uid/gid range for the user namespace; the
+	// system user created above has none. Done after user creation, in both layout
+	// modes, and only when DinD is on (the non-DinD base path is unchanged).
+	if u.opts.DinD {
+		if err := ensureSubIDRange(u.opts.User); err != nil {
+			return fmt.Errorf("allocate subuid/subgid for %s: %w", u.opts.User, err)
+		}
+	}
+	return nil
 }
 
 // ensureBaseLegacy is the historical single-user behavior: one user owns the
@@ -399,6 +439,74 @@ func mkdirOwned(ctx context.Context, dir string, mode os.FileMode, user string) 
 	return run(ctx, "chown", user+":"+user, dir)
 }
 
+// subID range conventions for rootless DinD. A user namespace needs a contiguous
+// block of subordinate uids/gids; 65536 is the de-facto default block size and
+// 100000 the conventional first allocation (below it the host's own system/login
+// uids live). Under isolation.perOrgUsers each org has its OWN user, so each gets a
+// DISJOINT block and that disjointness is the kernel uid-mapping boundary between
+// orgs (blocks must never overlap). In single-user mode all orgs share one user and
+// thus one block - per-JOB clean-slate still holds (the data-root is wiped each job),
+// but there is no cross-ORG uid boundary, consistent with single-user mode generally.
+const (
+	// SubIDCount is exported so doctor's readiness probe flags an undersized range
+	// against the SAME width the allocator writes (one source of truth).
+	SubIDCount = 65536
+	subIDBase  = 100000
+)
+
+// ensureSubIDRange guarantees the runner user has a /etc/subuid AND /etc/subgid
+// range so rootless dockerd can map a user namespace. `useradd --system` allocates
+// none, so srm must. Idempotent and non-overlapping: if the user already has an
+// entry in a file it is left untouched (if wide enough); otherwise a SubIDCount-wide block is
+// appended just past the highest existing range (>= subIDBase), so a second org's
+// user never collides with the first. Root-only (writes /etc/sub*id).
+func ensureSubIDRange(user string) error {
+	for _, path := range []string{"/etc/subuid", "/etc/subgid"} {
+		if err := ensureSubIDFile(path, user); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func ensureSubIDFile(path, user string) error {
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	next := subIDBase
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Split(strings.TrimSpace(line), ":")
+		if len(f) != 3 {
+			continue
+		}
+		if f[0] == user {
+			// Already allocated. Verify the block is wide enough: a hand-edited or
+			// distro-seeded range narrower than SubIDCount cannot map the full user
+			// namespace, and rootless dockerd then fails MID-JOB. Fail loud here (at
+			// provision/create) rather than leave a silently-broken range.
+			if cnt, err := strconv.Atoi(f[2]); err != nil || cnt < SubIDCount {
+				return fmt.Errorf("existing %s range for %s is too small (%q, need a count >= %d); widen or remove that line", path, user, line, SubIDCount)
+			}
+			return nil // adequate - leave it untouched (idempotent)
+		}
+		start, e1 := strconv.Atoi(f[1])
+		count, e2 := strconv.Atoi(f[2])
+		if e1 != nil || e2 != nil {
+			continue
+		}
+		if end := start + count; end > next {
+			next = end
+		}
+	}
+	body := string(data)
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	body += fmt.Sprintf("%s:%d:%d\n", user, next, SubIDCount)
+	return os.WriteFile(path, []byte(body), 0o644)
+}
+
 // ensureCacheDirs creates the host-wide build-tool cache directories (one per
 // ToolCacheEnv entry) and gives them to the runner user, so jobs can persist
 // dependency caches there across runs. Idempotent.
@@ -414,14 +522,9 @@ func (u *ubuntu) ensureCacheDirs(ctx context.Context) error {
 	return run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, u.opts.CacheRoot)
 }
 
-// agentCacheRoot holds the downloaded actions/runner agent tarballs. It is
-// deliberately a ROOT-OWNED 0700 directory OUTSIDE any runner tree: the tarball is
-// extracted and run as root, so it must never live where untrusted job code can
-// reach it. The historical location ({installRoot}/.cache) doubled as the runner
-// user's $HOME/.cache (job-writable in single-user mode), which let job code swap a
-// cached tarball that a later rollback would install as root - so the cache is host
-// global here instead (one download serves every org). See ensureTarball.
-const agentCacheRoot = "/var/lib/srm/agent-cache"
+// agentCacheRoot (the root-only dir holding downloaded agent tarballs, OUTSIDE any
+// runner tree so job code can't swap a tarball a later rollback installs as root) is
+// defined per OS in paths_linux.go / paths_windows.go. See ensureTarball.
 
 func (u *ubuntu) cachePath(dl Download) string {
 	base := filepath.Base(dl.URL)
@@ -614,8 +717,14 @@ func (u *ubuntu) teardownService(ctx context.Context, dir, svc string) {
 // bump isn't forgotten) and TestTemplateVersionMarkers pins the stamped marker to
 // the const.
 const (
-	CurrentDropInVersion    = 1
-	CurrentEphemeralVersion = 1
+	CurrentDropInVersion = 1
+	// CurrentEphemeralVersion is 2 since the DinD-aware generation: renderEphemeralUnit
+	// now selects between the strict hardening block and a relaxed variant (rootless
+	// dockerd cannot start under NoNewPrivileges / read-only cgroups). A v1 binary that
+	// does not understand the DinD field treats a v2 unit as newer and authoritative-
+	// skips it instead of reverting the relaxation - the mixed-fleet safety the marker
+	// exists for. Non-DinD units re-render byte-identical apart from the v2 marker.
+	CurrentEphemeralVersion = 2
 )
 
 const hardeningDropIn = `[Service]
@@ -704,7 +813,7 @@ func writeEnvAndLimits(b *strings.Builder, opts Options) {
 // deliberately NOT set to pid - it would hide /proc/cpuinfo and break nproc-based
 // build parallelism. NoNewPrivileges blocks privilege GAIN only; root dropping to
 // the per-org user via setpriv still works.
-const ephemeralHardening = `# srm-ephemeral-v1
+const ephemeralHardening = `# srm-ephemeral-v2
 # Managed by srm. Ephemeral-lane hardening (stricter than the persistent drop-in).
 NoNewPrivileges=true
 ProtectProc=invisible
@@ -716,6 +825,49 @@ ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectClock=true
 ProtectHostname=true
+LockPersonality=true
+RestrictRealtime=true
+LimitCORE=0
+`
+
+// ephemeralHardeningDinD is the hardening block for an ephemeral slot that runs the
+// per-job rootless Docker sidecar. The buildx docker-container driver runs BuildKit
+// (and each RUN step) as NESTED unprivileged containers; that nesting needs to mount
+// a fresh /proc, sethostname in its UTS namespace, write cgroupfs, and call the setuid
+// newuidmap/newgidmap helpers. Most of the strict block blocks exactly those, so the
+// DinD variant drops them (each was confirmed REQUIRED by live testing on Ubuntu 24.04
+// / cgroup v2 - the failure mode is named beside each):
+//   - NoNewPrivileges: neuters setuid newuidmap/newgidmap -> rootlesskit can't map the
+//     subuid range, daemon never starts.
+//   - ProtectControlGroups=true (read-only /sys/fs/cgroup): runc can't write the
+//     container cgroup. Set false (Delegate=yes kept as a forward hint).
+//   - ProtectProc / ProtectKernelTunables / ProtectKernelModules / ProtectKernelLogs /
+//     ProtectHome / PrivateTmp: each makes systemd give the unit a private mount ns
+//     with a LOCKED /proc, and an unprivileged nested userns cannot remount /proc over
+//     a locked one ("error mounting proc to rootfs: operation not permitted").
+//   - ProtectHostname: blocks the container's sethostname ("sethostname: operation
+//     not permitted").
+//
+// Only the non-mount, non-namespace filters survive: ProtectClock, LockPersonality,
+// RestrictRealtime, LimitCORE.
+//
+// SECURITY COST (documented, accepted): the DinD lane is materially less hardened than
+// the strict ephemeral lane. Notably ProtectProc=invisible is gone, so a sibling org's
+// runner user could read this lane's /proc/<pid>/cmdline (the single-use, short-lived
+// JIT blob) - a small cross-org window the strict lane closes. What still isolates the
+// lane: the unprivileged per-org user, the rootless user namespace, per-org subuid
+// separation, the per-job data-root wipe + daemon teardown, and the slot unit's own
+// cgroup caps (MemoryMax/Slice, applied by systemd as root over the whole subtree -
+// per-CONTAINER caps are NOT enforced under cgroupfs, but whole-job bounding holds).
+//
+// Used ONLY when Options.DinD is set; non-DinD slots keep the strict block byte-for-byte.
+const ephemeralHardeningDinD = `# srm-ephemeral-v2
+# Managed by srm. Ephemeral-lane hardening, rootless-DinD variant: relaxed so the
+# nested rootless build containers can start (mount /proc, sethostname, cgroupfs,
+# newuidmap). The job still runs as the unprivileged, user-namespaced per-org user.
+ProtectControlGroups=false
+Delegate=yes
+ProtectClock=true
 LockPersonality=true
 RestrictRealtime=true
 LimitCORE=0
@@ -743,7 +895,13 @@ func renderEphemeralUnit(opts Options, org, slot, workDir string) string {
 	b.WriteString("\n[Service]\n")
 	b.WriteString("Type=simple\n")
 	b.WriteString("WorkingDirectory=" + workDir + "\n")
-	b.WriteString("ExecStart=" + exe + " _runner-cycle --org " + org + " --slot " + slot + "\n")
+	execStart := exe + " _runner-cycle --org " + org + " --slot " + slot
+	// Bake the active config path so the systemd-launched cycle loads the same config
+	// the lane was created with (e.g. a DinD lane's docker block), not the default.
+	if opts.ConfigPath != "" {
+		execStart += " --config " + opts.ConfigPath
+	}
+	b.WriteString("ExecStart=" + execStart + "\n")
 	b.WriteString("Restart=always\n")
 	b.WriteString("RestartSec=3\n")
 	b.WriteString("KillMode=mixed\n")
@@ -751,7 +909,11 @@ func renderEphemeralUnit(opts Options, org, slot, workDir string) string {
 	// running job has to finish before SIGKILL. Generous so a normal job isn't cut
 	// off (an idle slot's run.sh exits immediately); tune per max job wallclock.
 	b.WriteString("TimeoutStopSec=3600\n")
-	b.WriteString(ephemeralHardening)
+	if opts.DinD {
+		b.WriteString(ephemeralHardeningDinD)
+	} else {
+		b.WriteString(ephemeralHardening)
+	}
 	if opts.Slice != "" {
 		b.WriteString("Slice=" + opts.Slice + "\n")
 	}
@@ -1198,13 +1360,9 @@ type EphemeralParams struct {
 	Labels  []string `json:"labels"`
 }
 
-// ephemeralStateRoot holds srm's root-only control files for ephemeral slots. It
-// is deliberately OUTSIDE the slot tree: the slot tree is owned by the per-org
-// user (so the dropped run.sh can write _work), and untrusted job code running as
-// that user must NOT be able to forge .jit-id (a cross-runner deregister DoS) or
-// poison .jit-params (mint with different labels/group). These live here, root
-// 0700, where the job can't reach them.
-const ephemeralStateRoot = "/var/lib/srm/ephemeral"
+// ephemeralStateRoot holds srm's root-only control files for ephemeral slots,
+// deliberately OUTSIDE the (per-org-user-owned) slot tree so untrusted job code can't
+// forge .jit-id or poison .jit-params. Defined per OS in paths_{linux,windows}.go.
 
 // ephemeralSlotDir is the warm tree for one slot lane (extracted agent + _work),
 // under the org subtree so per-org isolation (0700, org-owned) covers it.
@@ -1414,12 +1572,25 @@ func (u *ubuntu) RunJob(ctx context.Context, org, slot, jitConfig string) error 
 	// warm agent binaries. run.sh re-creates .runner/.credentials from the new JIT
 	// config each cycle, so removing stale ones here leaves no creds at rest between
 	// jobs.
-	for _, sub := range []string{"_work", "_diag", ".runner", ".credentials", ".credentials_rsaparams"} {
+	resetDirs := []string{"_work", "_diag", "_home", ".runner", ".credentials", ".credentials_rsaparams"}
+	if u.opts.DinD {
+		// The rootless daemon's data-root (pulled images, built layers, build cache)
+		// lives in the slot tree. Wiping it HERE, before each job, is the authoritative
+		// clean-slate: it closes the race where a SIGKILL'd cycle skips post-job teardown
+		// and leaks images/cache/registry creds into the next (possibly cross-org) job.
+		resetDirs = append(resetDirs, ".docker-data")
+	}
+	for _, sub := range resetDirs {
 		if err := os.RemoveAll(filepath.Join(dir, sub)); err != nil {
 			return fmt.Errorf("reset %s: %w", sub, err)
 		}
 	}
 	if err := mkdirOwned(ctx, filepath.Join(dir, "_work"), 0o700, u.opts.User); err != nil {
+		return err
+	}
+	// Fresh, private per-job HOME (see ephemeralJobEnv for why the job needs one).
+	jobHome := filepath.Join(dir, "_home")
+	if err := mkdirOwned(ctx, jobHome, 0o700, u.opts.User); err != nil {
 		return err
 	}
 	// Resolve the per-org user's uid/gid (pure-Go /etc/passwd read under CGO_ENABLED=0).
@@ -1435,15 +1606,378 @@ func (u *ubuntu) RunJob(ctx context.Context, org, slot, jitConfig string) error 
 	// Written record of which user the job ran as, for manual audit (root-owned).
 	_ = os.WriteFile(filepath.Join(dir, ".ran-as"), []byte(u.opts.User+"\n"), 0o644)
 
-	// setpriv drops to the per-org user; the wrapping `env RUNNER_ALLOW_RUNASROOT=0`
-	// re-asserts the runner's own no-root guard (defense-in-depth, matching the
-	// persistent path) and is harmless once already non-root.
-	cmd := exec.CommandContext(ctx, "setpriv",
-		"--reuid", usr.Uid, "--regid", usr.Gid, "--init-groups", "--",
-		"env", "RUNNER_ALLOW_RUNASROOT=0", "./run.sh", "--jitconfig", jitConfig)
+	// Rootless DinD: bring up a per-job docker daemon as the per-org user and collect
+	// the env (DOCKER_HOST, ...) the job must see to use it. Torn down on return so the
+	// daemon never outlives the job (the next cycle's pre-job wipe reclaims the rest).
+	var jobEnv []string
+	if u.opts.DinD {
+		daemon, denv, err := u.startRootlessDocker(ctx, org, slot, usr)
+		if err != nil {
+			return fmt.Errorf("start rootless docker: %w", err)
+		}
+		defer u.stopRootlessDocker(daemon)
+		jobEnv = denv
+	}
+
+	// setpriv drops to the per-org user, then `env` sets the job environment. setpriv is
+	// not a login, so HOME/USER/LOGNAME would otherwise be unset/inherited-root -
+	// ephemeralJobEnv fixes that (jobEnv carries DinD's DOCKER_HOST et al, empty otherwise).
+	argv := append([]string{"--reuid", usr.Uid, "--regid", usr.Gid, "--init-groups", "--", "env"},
+		ephemeralJobEnv(u.opts.User, jobHome, jobEnv)...)
+	argv = append(argv, "./run.sh", "--jitconfig", jitConfig)
+	cmd := exec.CommandContext(ctx, "setpriv", argv...)
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+// ephemeralJobEnv is the environment a setpriv-dropped ephemeral job runs with. The
+// slot unit starts as root (to mint the JIT config) and setpriv-drops per job; setpriv
+// is NOT a login, so it leaves HOME unset and USER/LOGNAME as root. No normal GitHub
+// runner does that, and srm's OWN persistent lanes get HOME from systemd's User=, so
+// jobs on ephemeral lanes were the only ones missing it - breaking every action that
+// reads $HOME (npm/.netrc auth, `git config --global`, changesets, ...). This sets them
+// explicitly. HOME is a FRESH per-job dir (wiped with the rest of the slot's per-cycle
+// state), NOT the user's shared passwd HOME: that keeps the ephemeral clean-slate (no
+// creds at rest between jobs) and avoids colliding with the org's persistent runners,
+// which share the passwd HOME. RUNNER_ALLOW_RUNASROOT=0 re-asserts the runner's own
+// no-root guard; extra carries DinD's DOCKER_HOST/BUILDX_BUILDER (empty otherwise).
+func ephemeralJobEnv(user, home string, extra []string) []string {
+	env := []string{
+		"RUNNER_ALLOW_RUNASROOT=0",
+		"HOME=" + home,
+		"USER=" + user,
+		"LOGNAME=" + user,
+	}
+	return append(env, extra...)
+}
+
+// dindRunRoot is the tmpfs parent for per-slot rootless runtime dirs (the docker
+// socket + exec-root). Under /run so it is wiped on reboot and never persists at
+// rest; startRootlessDocker (re)creates the per-slot dir each cycle.
+const dindRunRoot = "/run/srm/dind"
+
+// pinnedPATH is the PATH handed to the rootless daemon and buildx. setpriv
+// --init-groups does NOT establish a login PATH, and rootlesskit shells out to the
+// setuid newuidmap/newgidmap helpers and to slirp4netns; without their dirs on PATH
+// the daemon dies with "executable file not found". Mirrors Docker's documented
+// non-systemd rootless start recipe.
+const pinnedPATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+// rootlessBuilderName is the buildx builder srm pre-seeds against the rootless
+// daemon. The job's BUILDX_BUILDER is pointed at it so the default docker-container
+// driver uses a rootless-capable BuildKit with no workflow change.
+const rootlessBuilderName = "srm-rootless"
+
+func (u *ubuntu) dindRuntimeDir(org, slot string) string {
+	return filepath.Join(dindRunRoot, org, slot)
+}
+
+// dindDataRoot is the rootless daemon's data-root (images/layers/build cache). It
+// lives in the slot tree (user-owned) so the per-job wipe in RunJob can reclaim it;
+// NOT under $HOME, which ProtectHome would otherwise hide from the daemon.
+func (u *ubuntu) dindDataRoot(org, slot string) string {
+	return filepath.Join(u.ephemeralSlotDir(org, slot), ".docker-data")
+}
+
+// dindDockerConfigDir is the per-slot docker/buildx CLIENT config dir (DOCKER_CONFIG).
+// It lives UNDER the per-job _home, so the per-job reset wipes it (no buildx builder
+// state or docker creds at rest between cycles). The builder pre-seed AND the job both
+// point DOCKER_CONFIG here, so the named rootless builder srm creates is resolvable when
+// the job's `docker buildx build` runs - without this the builder is written to one HOME
+// and looked up from another, and BUILDX_BUILDER points at a non-existent builder.
+func (u *ubuntu) dindDockerConfigDir(org, slot string) string {
+	return filepath.Join(u.ephemeralSlotDir(org, slot), "_home", ".docker")
+}
+
+// userHome returns the per-org user's $HOME: the org subtree in isolated mode, the
+// install root in single-user mode - matching ensureBase{Isolated,Legacy}.
+func (u *ubuntu) userHome(org string) string {
+	if u.opts.Isolated {
+		return filepath.Join(u.installRoot, org)
+	}
+	return u.installRoot
+}
+
+// startRootlessDocker brings up a per-job rootless dockerd as the per-org user and
+// returns the running daemon process plus the env vars the job must see to use it
+// (DOCKER_HOST, XDG_RUNTIME_DIR, the per-slot DOCKER_CONFIG, and - when the rootless
+// buildx builder seeds successfully - BUILDX_BUILDER). The daemon runs in the user's own user namespace
+// (no host root, no docker group); its socket + exec-root are on tmpfs under /run and
+// its data-root in the slot tree (wiped each cycle). The caller MUST stopRootlessDocker
+// the returned process. Root-only (it setpriv-drops, like RunJob).
+func (u *ubuntu) startRootlessDocker(ctx context.Context, org, slot string, usr *user.User) (*exec.Cmd, []string, error) {
+	rt := u.dindRuntimeDir(org, slot)
+	sock := filepath.Join(rt, "docker.sock")
+	dataRoot := u.dindDataRoot(org, slot)
+	dockerCfg := u.dindDockerConfigDir(org, slot)
+	home := u.userHome(org)
+
+	// Authoritatively clean the per-slot runtime dir each cycle. It is tmpfs and holds
+	// the socket + exec-root, and is NOT under the data-root the pre-job reset clears.
+	// Removing it unlinks any stale socket/pidfile a prior cycle left, so THIS cycle's
+	// daemon binds a fresh socket and waitDockerSocket cannot false-ready against a
+	// leftover listener.
+	if err := os.RemoveAll(rt); err != nil {
+		return nil, nil, err
+	}
+	// Parents traversable-but-not-listable (0711), mode FORCED past umask on every
+	// component (MkdirAll's mode is umask-masked; a hardened umask would drop o+x and
+	// break the per-org user's traversal into its own 0700 leaf).
+	for _, d := range []string{"/run/srm", dindRunRoot, filepath.Dir(rt)} {
+		if err := os.MkdirAll(d, 0o711); err != nil {
+			return nil, nil, err
+		}
+		if err := os.Chmod(d, 0o711); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := mkdirOwned(ctx, rt, 0o700, u.opts.User); err != nil {
+		return nil, nil, err
+	}
+	if err := mkdirOwned(ctx, dataRoot, 0o700, u.opts.User); err != nil {
+		return nil, nil, err
+	}
+	// Per-slot DOCKER_CONFIG (buildx instance store + docker creds), under the wiped
+	// _home so nothing persists between cycles. The job below is handed the SAME dir, so
+	// the builder pre-seeded here is resolvable in-job.
+	if err := mkdirOwned(ctx, dockerCfg, 0o700, u.opts.User); err != nil {
+		return nil, nil, err
+	}
+	// Pin a daemon config that (a) shadows any host /etc/docker/daemon.json and (b)
+	// forces the cgroupfs cgroup driver. The systemd driver (dockerd's default) makes
+	// the daemon create each container's cgroup as a systemd scope via a user session
+	// bus - which this setpriv-launched daemon does NOT have (no `systemctl --user`, no
+	// linger), so container start fails ("cgroup.controllers: no such file" / "Interactive
+	// authentication required"). cgroupfs sidesteps that; the build container then runs
+	// without per-container limits (whole-job bounds still come from the slot unit's
+	// systemd caps). Validated live on Ubuntu 24.04 / cgroup v2.
+	cfgFile := filepath.Join(rt, "daemon.json")
+	if err := os.WriteFile(cfgFile, []byte(`{"exec-opts":["native.cgroupdriver=cgroupfs"]}`+"\n"), 0o644); err != nil {
+		return nil, nil, err
+	}
+
+	// dockerd-rootless.sh defaults its socket to $XDG_RUNTIME_DIR/docker.sock, so
+	// pointing XDG_RUNTIME_DIR at the per-slot runtime dir fixes the socket path with
+	// no --host needed. --data-root moves state off $HOME (hidden by ProtectHome) into
+	// the wiped slot tree. setProcessGroup puts the daemon in its own group so
+	// stopRootlessDocker can reap the whole rootlesskit/dockerd tree. The daemon is NOT
+	// bound to ctx: a cancelled job ctx must not race the daemon down before
+	// stopRootlessDocker drains it - we own its lifecycle.
+	daemon := exec.Command("setpriv",
+		"--reuid", usr.Uid, "--regid", usr.Gid, "--init-groups", "--",
+		"env", "HOME="+home, "XDG_RUNTIME_DIR="+rt, "PATH="+pinnedPATH,
+		"dockerd-rootless.sh", "--config-file", cfgFile, "--data-root", dataRoot)
+	setProcessGroup(daemon)
+	daemon.Stdout, daemon.Stderr = os.Stderr, os.Stderr // daemon chatter to stderr, job stdout stays clean
+	if err := daemon.Start(); err != nil {
+		return nil, nil, fmt.Errorf("launch dockerd-rootless: %w", err)
+	}
+
+	if err := waitDockerSocket(ctx, sock, 90*time.Second); err != nil {
+		u.stopRootlessDocker(daemon)
+		return nil, nil, err
+	}
+
+	// DOCKER_CONFIG is per-slot and wiped each cycle; the job is handed the same value so
+	// its `docker`/`docker buildx` reads the builder srm pre-seeds below.
+	env := []string{"DOCKER_HOST=unix://" + sock, "XDG_RUNTIME_DIR=" + rt, "DOCKER_CONFIG=" + dockerCfg}
+	// Pre-seed a rootless-capable buildx builder and point the job's buildx at it via
+	// BUILDX_BUILDER (which outranks any builder docker/setup-buildx-action creates and
+	// `docker buildx use` sets), so the default docker-container driver builds against a
+	// rootless BuildKit with no workflow change. Best-effort: on failure the daemon
+	// still serves bare `docker`, so log and skip BUILDX_BUILDER rather than fail the job.
+	if err := u.seedRootlessBuilder(ctx, org, slot, usr, home, dockerCfg, rt, sock); err != nil {
+		fmt.Fprintf(os.Stderr, "srm: rootless buildx builder pre-seed failed (bare docker still works): %v\n", err)
+	} else {
+		env = append(env, "BUILDX_BUILDER="+rootlessBuilderName)
+	}
+	return daemon, env, nil
+}
+
+// userDockerCmd builds a setpriv-dropped `docker ...` invocation as the per-org user
+// pointed at the rootless daemon (DOCKER_HOST). DOCKER_CONFIG pins the buildx instance
+// store to the per-slot dir the JOB also reads, so the builder srm pre-seeds here is
+// resolvable when the job's `docker buildx build` runs (see startRootlessDocker). Shared
+// by the builder pre-seed steps.
+func (u *ubuntu) userDockerCmd(ctx context.Context, usr *user.User, home, dockerConfig, rt, sock string, dockerArgs ...string) *exec.Cmd {
+	argv := []string{"--reuid", usr.Uid, "--regid", usr.Gid, "--init-groups", "--",
+		"env", "HOME=" + home, "DOCKER_CONFIG=" + dockerConfig, "XDG_RUNTIME_DIR=" + rt, "PATH=" + pinnedPATH, "DOCKER_HOST=unix://" + sock}
+	argv = append(argv, dockerArgs...)
+	cmd := exec.CommandContext(ctx, "setpriv", argv...)
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	return cmd
+}
+
+// buildkitdCDIDisabled is the buildkitd.toml srm pins onto the pre-seeded builder. It
+// disables CDI so a host with no GPU does not log "failed to discover GPU vendor from
+// CDI: no known GPU vendor found" on every builder bootstrap (cosmetic, the build works
+// regardless). CDI device injection has no role in srm's rootless build sandbox. The
+// flag (--buildkitd-config) and the [cdi] section need a modern buildx/buildkit;
+// seedRootlessBuilder falls back to a config-less create if either is not understood.
+const buildkitdCDIDisabled = "[cdi]\n  disabled = true\n"
+
+// seedRootlessBuilder creates (idempotently) and bootstraps the rootless buildx
+// builder. It runs the STANDARD BuildKit image (u.opts.BuildkitImage, default
+// config.DefaultRootlessBuildkitImage) with --oci-worker-no-process-sandbox: inside
+// rootless dockerd the image's own process sandbox cannot create the nested user
+// namespace it wants, and the -rootless image variant double-nests and fails, so the
+// sandbox is disabled instead. dockerConfig is the per-slot buildx instance store the
+// JOB will also read (DOCKER_CONFIG), so the named builder is resolvable in-job.
+//
+// Two cycle-cost mitigations layer on top, both fail-open (worst case is the prior
+// behavior): (1) the BuildKit image is loaded from a persistent cache tar so --bootstrap
+// does not re-pull it from the registry every cycle (the data-root is wiped each cycle);
+// (2) a buildkitd config disables CDI to kill the no-GPU discovery noise.
+func (u *ubuntu) seedRootlessBuilder(ctx context.Context, org, slot string, usr *user.User, home, dockerConfig, rt, sock string) error {
+	// Bound JUST the pre-seed: a cold BuildKit image pull is legitimately slow, but a
+	// wedged registry must not hang the slot lane. run.sh keeps its full job wallclock
+	// (TimeoutStopSec=3600); on timeout here the caller falls back to bare docker.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	// Load the pre-pulled BuildKit image from the persistent cache (it survives the
+	// per-cycle data-root wipe) so the --bootstrap below finds the image already present
+	// and skips the registry pull. Best-effort: a miss or a corrupt tar just means
+	// bootstrap pulls, exactly as before this cache existed.
+	cacheTar := u.dindImageCache()
+	loaded := false
+	if _, err := os.Stat(cacheTar); err == nil {
+		if err := u.userDockerCmd(ctx, usr, home, dockerConfig, rt, sock, "docker", "load", "-i", cacheTar).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "srm: rootless buildkit image cache load failed (will pull): %v\n", err)
+		} else {
+			loaded = true
+		}
+	}
+
+	// Pin a buildkitd config that disables CDI. Best-effort: if it can't be written we
+	// create without it (CDI noise returns, the build still works).
+	bkCfg := filepath.Join(rt, "buildkitd.toml")
+	if err := os.WriteFile(bkCfg, []byte(buildkitdCDIDisabled), 0o644); err != nil {
+		bkCfg = ""
+	}
+
+	// Stale buildx state for this name may survive in the per-slot DOCKER_CONFIG from a
+	// prior cycle; remove it first so create is idempotent rather than failing on
+	// "existing instance".
+	_ = u.userDockerCmd(ctx, usr, home, dockerConfig, rt, sock, "docker", "buildx", "rm", rootlessBuilderName).Run()
+	err := u.createRootlessBuilder(ctx, usr, home, dockerConfig, rt, sock, bkCfg)
+	if err != nil && bkCfg != "" {
+		// The buildkitd config (or its --buildkitd-config flag) may be unsupported on an
+		// older buildx; retry without it so a working rootless builder still seeds. The
+		// CDI noise returns, but the zero-workflow-change build path is preserved.
+		fmt.Fprintf(os.Stderr, "srm: builder create with buildkitd config failed, retrying without it: %v\n", err)
+		_ = u.userDockerCmd(ctx, usr, home, dockerConfig, rt, sock, "docker", "buildx", "rm", rootlessBuilderName).Run()
+		err = u.createRootlessBuilder(ctx, usr, home, dockerConfig, rt, sock, "")
+	}
+	if err != nil {
+		return err
+	}
+
+	// Seed the persistent image cache for the next cycles when we pulled this cycle (first
+	// run or a cache miss). Best-effort: a failure just means the next cycle pulls again.
+	if !loaded {
+		if err := u.seedDinDImageCache(ctx, org, slot, usr, home, dockerConfig, rt, sock, cacheTar); err != nil {
+			fmt.Fprintf(os.Stderr, "srm: rootless buildkit image cache seed failed (next cycle will pull): %v\n", err)
+		}
+	}
+	return nil
+}
+
+// createRootlessBuilder runs `docker buildx create --bootstrap` for the rootless builder,
+// optionally pinning a buildkitd config file (the CDI disable). An empty buildkitdConfig
+// omits the flag entirely.
+func (u *ubuntu) createRootlessBuilder(ctx context.Context, usr *user.User, home, dockerConfig, rt, sock, buildkitdConfig string) error {
+	args := []string{"docker", "buildx", "create",
+		"--name", rootlessBuilderName,
+		"--driver", "docker-container",
+		"--driver-opt", "image=" + u.opts.BuildkitImage,
+		"--buildkitd-flags", "--oci-worker-no-process-sandbox",
+	}
+	if buildkitdConfig != "" {
+		args = append(args, "--buildkitd-config", buildkitdConfig)
+	}
+	args = append(args, "--use", "--bootstrap")
+	return u.userDockerCmd(ctx, usr, home, dockerConfig, rt, sock, args...).Run()
+}
+
+// seedDinDImageCache exports the just-bootstrapped BuildKit image to the persistent cache
+// tar so subsequent cycles load it locally instead of re-pulling. The export goes to a
+// per-slot temp path then renames into place, so a concurrent slot of the same org never
+// reads a half-written tar.
+func (u *ubuntu) seedDinDImageCache(ctx context.Context, org, slot string, usr *user.User, home, dockerConfig, rt, sock, cacheTar string) error {
+	if err := mkdirOwned(ctx, filepath.Dir(cacheTar), 0o700, u.opts.User); err != nil {
+		return err
+	}
+	tmp := cacheTar + "." + org + "_" + slot + ".tmp"
+	if err := u.userDockerCmd(ctx, usr, home, dockerConfig, rt, sock, "docker", "save", "-o", tmp, u.opts.BuildkitImage).Run(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, cacheTar)
+}
+
+// dindImageCache is the persistent tar holding the pre-pulled BuildKit image. It lives on
+// the build-tool cache root (which survives the per-cycle data-root wipe), keyed by image
+// ref so a changed BuildkitImage re-seeds rather than loading a stale image.
+func (u *ubuntu) dindImageCache() string {
+	return filepath.Join(u.opts.CacheRoot, "srm-dind", "buildkit-"+sanitizeImageRef(u.opts.BuildkitImage)+".tar")
+}
+
+// sanitizeImageRef reduces an image ref to a safe single filename component: alphanumerics
+// and . - _ survive, every other byte becomes _.
+func sanitizeImageRef(ref string) string {
+	var b strings.Builder
+	for _, r := range ref {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+// stopRootlessDocker terminates the per-job rootless daemon: SIGTERM, a bounded wait
+// for graceful shutdown, then SIGKILL. Best-effort - the next cycle's pre-job wipe is
+// the authoritative cleanup, so any residue here is reclaimed before the next job.
+func (u *ubuntu) stopRootlessDocker(cmd *exec.Cmd) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	killProcessGroup(cmd, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() { _, _ = cmd.Process.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		killProcessGroup(cmd, syscall.SIGKILL)
+		<-done
+	}
+}
+
+// waitDockerSocket blocks until the rootless daemon accepts connections on its unix
+// socket, or timeout/ctx elapses. A socket still not listening at the deadline is a
+// HARD failure: the cycle must fail loudly, never run the job against a dead socket
+// (which would resurface the same EACCES-class error pointing at a missing daemon).
+func waitDockerSocket(ctx context.Context, sock string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		c, err := net.DialTimeout("unix", sock, 2*time.Second)
+		if err == nil {
+			_ = c.Close()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("rootless dockerd socket %s not ready after %s: %w", sock, timeout, err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 func fileExists(p string) bool {

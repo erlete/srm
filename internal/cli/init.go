@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -44,8 +45,10 @@ type orgFields struct {
 // defaultOrgFields seeds the form with the conventional defaults.
 func defaultOrgFields() orgFields {
 	return orgFields{
-		groupIDStr:  "1",
-		labelsStr:   "self-hosted,linux,x64",
+		groupIDStr: "1",
+		// OS/arch defaults track the build (GitHub also auto-adds the read-only
+		// self-hosted/<OS>/<arch> labels on top); runtime.GOOS is "linux"/"windows".
+		labelsStr:   "self-hosted," + runtime.GOOS + ",x64",
 		installRoot: config.DefaultInstallRoot,
 	}
 }
@@ -73,7 +76,7 @@ func orgForm(f *orgFields) *huh.Form {
 			huh.NewInput().Title("Organization slug (login)").Placeholder("acme").Value(&f.name).Validate(required),
 			huh.NewInput().Title("GitHub App ID").Placeholder("123456").Value(&f.appIDStr).Validate(intRequired),
 			huh.NewInput().Title("Installation ID (for this org)").Placeholder("7654321").Value(&f.instIDStr).Validate(intRequired),
-			huh.NewInput().Title("Path to the App private key (.pem)").Placeholder("/etc/srm/acme.pem").Value(&f.keyPath).Validate(required),
+			huh.NewInput().Title("Path to the App private key (.pem)").Placeholder(filepath.Join(filepath.Dir(systemConfigPath), "acme.pem")).Value(&f.keyPath).Validate(required),
 		),
 		huh.NewGroup(
 			huh.NewInput().Title("Default runner group ID").Value(&f.groupIDStr).Validate(intRequired),

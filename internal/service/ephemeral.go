@@ -110,7 +110,7 @@ func (m *Manager) CreateEphemeralRunners(ctx context.Context, spec DeploySpec, p
 		groupID = m.defaultGroupID(org)
 	}
 
-	dl, err := m.linuxDownload(ctx, org)
+	dl, err := m.agentDownload(ctx, org)
 	if err != nil {
 		return nil, err
 	}
@@ -240,10 +240,20 @@ func (m *Manager) RunCycle(ctx context.Context, org, slot string) error {
 	if gid == 0 {
 		gid = m.defaultGroupID(org)
 	}
+	// generate-jitconfig requires a non-null labels array of at least one item (GitHub
+	// then layers self-hosted + OS + arch on top). A slot created without custom labels
+	// has nil labels, which marshals to JSON null and is rejected with a 422; default to
+	// self-hosted (GitHub's own documented example value) so the mint is valid and the
+	// runner still ends up with the standard self-hosted/<os>/<arch> set. (Linux always
+	// passes labels today, so this is a latent guard; it fires on a label-less slot.)
+	labels := params.Labels
+	if len(labels) == 0 {
+		labels = []string{"self-hosted"}
+	}
 	jit, err := c.GenerateJITConfig(ctx, org, ghub.JITRequest{
 		Name:       runner.EphemeralRunnerName(org, slot, cycleNonce()),
 		GroupID:    gid,
-		Labels:     params.Labels,
+		Labels:     labels,
 		WorkFolder: "_work",
 	})
 	if err != nil {

@@ -8,20 +8,19 @@ import (
 	"time"
 )
 
-// StatePath is the host manifest srm writes to record what it has installed:
-// each runner's agent version, the GitHub id it registered under, and the
-// template generation of its unit. It lives under /var/lib/srm (root 0600),
-// alongside the ephemeral control dir.
+// StatePath is the host manifest srm writes to record what it has installed: each
+// runner's agent version, the GitHub id it registered under, and the template
+// generation of its unit. Its OS-specific location (Linux /var/lib/srm/state.json;
+// Windows %ProgramData%\srm\state.json) is defined in state_linux.go / state_windows.go.
 //
-// The manifest is ADVISORY, never authoritative. The live GitHub runner list and
-// the on-disk systemd units are the source of truth; this file only annotates
-// them with facts that cannot be read back from a running runner (notably the
-// installed agent version, which the actions/runner REST API does not expose). A
-// command MUST treat an absent file, a missing entry, or a stale entry as
-// "unknown" and fall back to acting on live state - never skip or mutate a real
-// runner because the manifest disagrees. An absent file is therefore a complete
-// no-op for every command, so hosts created by srm <= v1.3.0 are unaffected.
-const StatePath = "/var/lib/srm/state.json"
+// The manifest is ADVISORY, never authoritative. The live GitHub runner list and the
+// on-disk service state are the source of truth; this file only annotates them with
+// facts that cannot be read back from a running runner (notably the installed agent
+// version, which the actions/runner REST API does not expose). A command MUST treat an
+// absent file, a missing entry, or a stale entry as "unknown" and fall back to acting
+// on live state - never skip or mutate a real runner because the manifest disagrees. An
+// absent file is therefore a complete no-op for every command, so hosts created by srm
+// <= v1.3.0 are unaffected.
 
 // CurrentStateVersion is the manifest schema generation. Bump it (and migrate on
 // load) if the on-disk shape changes incompatibly. A manifest from a newer srm is

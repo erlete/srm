@@ -1,8 +1,12 @@
-// Package provision applies a profile's host-once dependency manifest to an
-// Ubuntu x64 host (apt packages, setup scripts, persistent cache paths),
-// idempotently and with drift detection. The host is the durable substrate;
-// runners consume it. Self-hosted runners ship bare - no Node/Python/Docker -
-// so without this a job that "just works" on ubuntu-latest fails with 127.
+//go:build !windows
+
+// Package provision applies a profile's host-once dependency manifest to the host
+// (idempotently, with drift detection). The host is the durable substrate; runners
+// consume it. Self-hosted runners ship bare - no Node/Python/Docker - so without this
+// a job that "just works" on a hosted runner fails with 127. This file is the Linux
+// reconciler (apt packages, setup scripts, persistent cache paths); the Windows
+// reconciler (winget/choco) lives in provision_windows.go. New/NewFor dispatch to the
+// right one per OS so the service layer is OS-agnostic.
 package provision
 
 import (
@@ -50,6 +54,16 @@ func NewUbuntuFor(runnerUser, toolCacheRoot string) Reconciler {
 		toolCacheRoot = config.DefaultToolCacheRoot
 	}
 	return &ubuntu{runnerUser: runnerUser, toolCacheRoot: toolCacheRoot}
+}
+
+// New returns the host reconciler for THIS OS (Linux: the apt/winget-free Ubuntu
+// reconciler). It is the OS-agnostic entry point the service layer calls; the Windows
+// build's provision_windows.go defines the matching New returning the winget reconciler.
+func New(runnerUser string) Reconciler { return NewUbuntu(runnerUser) }
+
+// NewFor is New scoped to a specific tool-cache root (e.g. an org's private root).
+func NewFor(runnerUser, toolCacheRoot string) Reconciler {
+	return NewUbuntuFor(runnerUser, toolCacheRoot)
 }
 
 // Apply installs apt packages (idempotently - apt is a no-op for present ones),

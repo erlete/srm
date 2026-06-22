@@ -29,7 +29,7 @@ func newRunnersUpgradeCmd() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "upgrade",
-		Short: "Upgrade the actions/runner agent on local runners in place, idle-only (run as root on the host)",
+		Short: "Upgrade the actions/runner agent on local runners in place, idle-only (run elevated on the host)",
 		Long: "Replaces the actions/runner agent binaries on THIS host's runners with a newer " +
 			"release, in place. Persistent runners keep their registration (the same swap the " +
 			"agent's own auto-update performs); ephemeral lanes are rebuilt between job cycles. " +
@@ -130,7 +130,7 @@ func newRunnersCreateCmd() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "create",
-		Short: "Provision self-hosted runners on THIS host - persistent, or --ephemeral JIT slots (run as root on the target)",
+		Short: "Provision self-hosted runners on THIS host - persistent, or --ephemeral JIT slots (run elevated on the target)",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			mgr, closeLog, err := buildManager()
 			if err != nil {
@@ -413,7 +413,7 @@ func newRunnersDestroyCmd() *cobra.Command {
 	)
 	c := &cobra.Command{
 		Use:   "destroy [name]",
-		Short: "Remove a persistent runner (by name) or an --ephemeral slot (by --slot) from THIS host and deregister it (run as root)",
+		Short: "Remove a persistent runner (by name) or an --ephemeral slot (by --slot) from THIS host and deregister it (run elevated)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			mgr, closeLog, err := buildManager()
@@ -491,11 +491,12 @@ func newRunnersDestroyCmd() *cobra.Command {
 func newRunnersRefreshCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "refresh",
-		Short: "Re-apply the systemd drop-in (hardening + tool-cache env) to local runners and restart them (run as root on the host)",
-		Long: "Re-writes each local runner's systemd drop-in so changes to the hardening " +
-			"directives, the host build-tool cache env (npm/pnpm/go/...), resource limits, or " +
-			"per-org isolation take effect, then restarts the runner. Busy runners are skipped. " +
-			"Use --org to stage a change one org at a time. No recreate needed.",
+		Short: "Re-apply runner configuration (hardening, tool-cache env, limits) to local runners and restart them (run elevated on the host)",
+		Long: "Re-applies each local runner's host configuration so changes to the hardening, " +
+			"the host build-tool cache env (npm/pnpm/go/...), resource limits, or per-org " +
+			"isolation take effect, then restarts the runner. (On Linux this re-renders the " +
+			"systemd drop-in; on Windows it restarts the service, which re-reads its config.) " +
+			"Busy runners are skipped. Use --org to stage a change one org at a time. No recreate needed.",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			mgr, closeLog, err := buildManager()
 			if err != nil {

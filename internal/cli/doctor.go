@@ -111,6 +111,12 @@ func newDoctorCmd() *cobra.Command {
 					}
 				}
 			}
+
+			// Rootless-DinD readiness (Linux only; no-op on Windows). When
+			// docker.rootlessDinD is on, these prerequisites fail a build mid-job (not at
+			// startup) if absent, so surface them here. Reflects THIS host's kernel + PATH.
+			dindReadiness(mgr.Config(), orgs)
+
 			fmt.Println("\nFor deep host/runner drift + health (and repair), run `srm reconcile`.")
 			return nil
 		},

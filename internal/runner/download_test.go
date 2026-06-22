@@ -4,7 +4,9 @@ import "testing"
 
 func TestDownloadURL(t *testing.T) {
 	got := DownloadURL("2.335.1")
-	want := "https://github.com/actions/runner/releases/download/v2.335.1/actions-runner-linux-x64-2.335.1.tar.gz"
+	// AssetName carries the OS-specific archive name (linux-x64.tar.gz / win-x64.zip),
+	// so assert the URL template around it rather than a hardcoded os/arch.
+	want := "https://github.com/actions/runner/releases/download/v2.335.1/" + AssetName("2.335.1")
 	if got != want {
 		t.Fatalf("DownloadURL = %q, want %q", got, want)
 	}

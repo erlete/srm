@@ -47,14 +47,14 @@ func TestUnitVersionParsing(t *testing.T) {
 	}{
 		{"[Service]\n# srm-dropin-v1\nProtectHome=true\n", "dropin", 1},
 		{"[Service]\n# srm-dropin-v7\n", "dropin", 7},
-		{"[Service]\nProtectHome=true\n", "dropin", 0},          // absent => pre-versioning (v0)
+		{"[Service]\nProtectHome=true\n", "dropin", 0}, // absent => pre-versioning (v0)
 		{"# srm-ephemeral-v2\nNoNewPrivileges=true\n", "ephemeral", 2},
-		{"# srm-dropin-vX\n", "dropin", 0},                      // non-numeric => 0
-		{"  # srm-dropin-v3  \n", "dropin", 3},                  // tolerant of surrounding space
-		{"# srm-dropin-v-1\n", "dropin", 0},                     // negative => invalid => 0
-		{"# srm-dropin-v99999999999999999999\n", "dropin", 0},   // overflow => 0
-		{"# srm-dropin-v01\n", "dropin", 1},                     // leading zero => 1
-		{"# srm-dropin-v2\n# srm-dropin-v5\n", "dropin", 2},     // duplicate => first wins (safe: too-low only forces a forward re-render)
+		{"# srm-dropin-vX\n", "dropin", 0},                    // non-numeric => 0
+		{"  # srm-dropin-v3  \n", "dropin", 3},                // tolerant of surrounding space
+		{"# srm-dropin-v-1\n", "dropin", 0},                   // negative => invalid => 0
+		{"# srm-dropin-v99999999999999999999\n", "dropin", 0}, // overflow => 0
+		{"# srm-dropin-v01\n", "dropin", 1},                   // leading zero => 1
+		{"# srm-dropin-v2\n# srm-dropin-v5\n", "dropin", 2},   // duplicate => first wins (safe: too-low only forces a forward re-render)
 	}
 	for _, c := range cases {
 		if got := unitVersion(c.in, c.kind); got != c.want {
@@ -356,6 +356,61 @@ func TestRenderEphemeralUnit(t *testing.T) {
 	}
 }
 
+// TestRenderEphemeralUnitConfigPath verifies ConfigPath is baked into the ExecStart
+// so the systemd-launched cycle loads the SAME config the lane was created with (a
+// DinD lane's docker block lives there); empty ConfigPath omits --config (back-compat).
+func TestRenderEphemeralUnitConfigPath(t *testing.T) {
+	with := renderEphemeralUnit(Options{SelfExe: "/usr/local/bin/srm", ConfigPath: "/etc/srm/config.yaml"}, "acme", "3", "/d")
+	if !strings.Contains(with, "ExecStart=/usr/local/bin/srm _runner-cycle --org acme --slot 3 --config /etc/srm/config.yaml\n") {
+		t.Errorf("ConfigPath not baked into ExecStart:\n%s", with)
+	}
+	// Empty ConfigPath leaves the ExecStart byte-identical to the historical unit.
+	if without := renderEphemeralUnit(Options{SelfExe: "/usr/local/bin/srm"}, "acme", "3", "/d"); strings.Contains(without, "--config") {
+		t.Errorf("empty ConfigPath must not emit --config:\n%s", without)
+	}
+}
+
+// TestRenderEphemeralUnitDinD verifies the rootless-DinD hardening variant: a
+// per-job rootless dockerd cannot start under NoNewPrivileges or read-only cgroups,
+// so the DinD unit must DROP NoNewPrivileges and ProtectControlGroups (set false +
+// Delegate=yes) while keeping every other protection. The strict (non-DinD) unit is
+// unaffected, and both stamp the same v2 marker.
+func TestRenderEphemeralUnitDinD(t *testing.T) {
+	base := Options{User: "srm", ToolCache: "/t", CacheRoot: "/c", SelfExe: "/s"}
+	strict := renderEphemeralUnit(base, "o", "1", "/d")
+	dind := renderEphemeralUnit(func() Options { o := base; o.DinD = true; return o }(), "o", "1", "/d")
+
+	// Strict path is unchanged: NoNewPrivileges + read-only cgroups + the mount/proc
+	// protections all present.
+	for _, want := range []string{"NoNewPrivileges=true\n", "ProtectControlGroups=true\n", "ProtectProc=invisible\n", "ProtectHome=true\n", "PrivateTmp=true\n", "ProtectHostname=true\n"} {
+		if !strings.Contains(strict, want) {
+			t.Errorf("strict ephemeral unit lost %q:\n%s", want, strict)
+		}
+	}
+	// DinD path drops everything that blocks a nested rootless build container (each
+	// confirmed required by live testing): NoNewPrivileges (newuidmap), the proc/mount
+	// protections (proc remount), and ProtectHostname (sethostname).
+	for _, mustNot := range []string{"NoNewPrivileges=true", "ProtectProc=", "ProtectHome=true", "PrivateTmp=true", "ProtectKernelTunables=", "ProtectKernelModules=", "ProtectKernelLogs=", "ProtectHostname="} {
+		if strings.Contains(dind, mustNot) {
+			t.Errorf("DinD unit must NOT contain %q (blocks the nested build container):\n%s", mustNot, dind)
+		}
+	}
+	// DinD keeps the cgroup tweak + the non-mount filters, and the v2 marker.
+	for _, want := range []string{
+		"ProtectControlGroups=false\n", "Delegate=yes\n",
+		"ProtectClock=true\n", "LockPersonality=true\n", "RestrictRealtime=true\n", "LimitCORE=0\n",
+		fmt.Sprintf("# srm-ephemeral-v%d\n", CurrentEphemeralVersion),
+	} {
+		if !strings.Contains(dind, want) {
+			t.Errorf("DinD unit missing %q:\n%s", want, dind)
+		}
+	}
+	// Deterministic (reconcile byte-diffs it).
+	if dind != renderEphemeralUnit(func() Options { o := base; o.DinD = true; return o }(), "o", "1", "/d") {
+		t.Error("renderEphemeralUnit(DinD) is not deterministic")
+	}
+}
+
 // TestEphemeralNaming pins the ephemeral slot unit name, the minted JIT runner
 // name, and the prefix recognition reconcile relies on to exempt ephemeral
 // registrations from orphan classification.
@@ -385,7 +440,7 @@ func TestEphemeralNaming(t *testing.T) {
 		{"srm-eph-org2-1-ff", "org2", "1", true},
 		{"temporal-1", "Acme", "", false},         // not ephemeral
 		{"srm-eph-Other-1-ff", "Acme", "", false}, // wrong org
-		{"srm-eph-Acme-3", "Acme", "", false}, // no token segment
+		{"srm-eph-Acme-3", "Acme", "", false},     // no token segment
 	} {
 		got, ok := EphemeralSlotFromName(c.name, c.org)
 		if ok != c.wantOK || got != c.wantSlot {

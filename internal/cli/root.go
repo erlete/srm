@@ -45,7 +45,7 @@ func Execute(version string) error {
 	root.PersistentFlags().StringVar(&flagOrg, "org", "", "operate on a single org (default: all configured orgs where applicable)")
 	root.PersistentFlags().BoolVar(&flagDryRun, "dry-run", false, "preview mutations without calling GitHub")
 
-	root.AddCommand(newInitCmd(), newRunnersCmd(), newGroupsCmd(), newProvisionCmd(), newDoctorCmd(), newCacheCmd(), newReconcileCmd(), newRunnerCycleCmd(), newBackupCmd(), newRestoreCmd(), newUninstallCmd(), newVersionCmd(version))
+	root.AddCommand(newInitCmd(), newRunnersCmd(), newGroupsCmd(), newProvisionCmd(), newDoctorCmd(), newCacheCmd(), newReconcileCmd(), newRunnerCycleCmd(), newRunnerSupervisorCmd(), newBackupCmd(), newRestoreCmd(), newUninstallCmd(), newVersionCmd(version))
 	return root.Execute()
 }
 
@@ -62,11 +62,12 @@ func newVersionCmd(version string) *cobra.Command {
 	}
 }
 
-// systemConfigPath is the canonical location on a managed host. srm is a
-// root/sudo-operated tool, so the system path is preferred over the per-user
-// XDG path. Resolution precedence is: --config flag > /etc/srm/config.yaml >
-// $HOME/.config/srm/config.yaml.
-const systemConfigPath = "/etc/srm/config.yaml"
+// systemConfigPath is the canonical machine-wide config location on a managed host.
+// srm is an elevated-operated tool, so the system path is preferred over the per-user
+// path. Its OS-specific value (Linux /etc/srm/config.yaml; Windows
+// %ProgramData%\srm\config.yaml) lives in root_linux.go / root_windows.go. Resolution
+// precedence is: --config flag > system path (present, or running elevated) > per-user
+// config dir.
 
 func defaultConfigPath() string {
 	// The system path wins whenever it already exists - that's the standard
@@ -74,10 +75,9 @@ func defaultConfigPath() string {
 	if _, err := os.Stat(systemConfigPath); err == nil {
 		return systemConfigPath
 	}
-	// On a fresh host, root (sudo) defaults to the system path so `sudo srm init`
-	// seeds /etc/srm rather than root's home. (Geteuid is -1 on Windows, so the
-	// dev box falls through to the XDG path below.)
-	if os.Geteuid() == 0 {
+	// On a fresh host, an elevated invocation (sudo / Administrator) defaults to the
+	// system path so `srm init` seeds the machine-wide dir rather than a user profile.
+	if isElevated() {
 		return systemConfigPath
 	}
 	dir, err := os.UserConfigDir()
@@ -146,14 +146,14 @@ func targetOrg(mgr *service.Manager) (string, error) {
 	return "", fmt.Errorf("multiple orgs configured (%s) - specify --org", strings.Join(names, ", "))
 }
 
-// noOrgsError crafts the right guidance when no orgs resolved. On a managed host
-// the config + App key live root-only under /etc/srm, so a non-root invocation
-// can't read them - point the user at sudo rather than the irrelevant per-user
-// path. (Geteuid is -1 on Windows, so this only triggers on the real hosts.)
+// noOrgsError crafts the right guidance when no orgs resolved. On a managed host the
+// config + App key live in the restricted machine-wide dir, so an unprivileged
+// invocation can't read them - point the user at re-running elevated rather than the
+// irrelevant per-user path.
 func noOrgsError() error {
-	if os.Geteuid() != 0 {
+	if !isElevated() {
 		if _, err := os.Stat(systemConfigPath); err == nil || errors.Is(err, fs.ErrPermission) {
-			return fmt.Errorf("the system config %s is root-only (srm is sudo-operated) - re-run with sudo, e.g. `sudo srm runners list`", systemConfigPath)
+			return fmt.Errorf("the system config %s is restricted (srm is elevated-operated) - re-run elevated (sudo on Linux, Administrator on Windows), e.g. `sudo srm runners list`", systemConfigPath)
 		}
 	}
 	return fmt.Errorf("no orgs configured - create %s (see config.example.yaml)", flagConfig)
@@ -215,12 +215,12 @@ func ensureConfigured() error {
 	return firstRunSetup()
 }
 
-// firstRunEligible reports whether a no-orgs situation is a genuine fresh install
-// we can guide and write - as opposed to a root-only system config we merely can't
-// read as a non-root user, where the right answer is "re-run with sudo". It is the
-// inverse of noOrgsError's sudo-hint condition.
+// firstRunEligible reports whether a no-orgs situation is a genuine fresh install we
+// can guide and write - as opposed to a restricted system config we merely can't read
+// unprivileged, where the right answer is "re-run elevated". It is the inverse of
+// noOrgsError's elevated-hint condition.
 func firstRunEligible() bool {
-	if os.Geteuid() != 0 {
+	if !isElevated() {
 		if _, err := os.Stat(systemConfigPath); err == nil || errors.Is(err, fs.ErrPermission) {
 			return false
 		}

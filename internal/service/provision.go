@@ -18,15 +18,15 @@ func (m *Manager) ProvisionHost(ctx context.Context, man core.DependencyManifest
 		return nil
 	}
 	if !m.cfg.Isolation.PerOrgUsers {
-		return provision.NewUbuntu(m.cfg.RunnerUser).Apply(ctx, man)
+		return provision.New(m.cfg.RunnerUser).Apply(ctx, man)
 	}
 	base := man
 	base.ToolCacheSeeds = nil // host-global apt/scripts/cachePaths only
-	if err := provision.NewUbuntu(m.cfg.RunnerUser).Apply(ctx, base); err != nil {
+	if err := provision.New(m.cfg.RunnerUser).Apply(ctx, base); err != nil {
 		return err
 	}
 	for _, org := range m.cfg.OrgNames() {
-		r := provision.NewUbuntuFor(m.cfg.RunnerUserFor(org), m.cfg.ToolCacheFor(org))
+		r := provision.NewFor(m.cfg.RunnerUserFor(org), m.cfg.ToolCacheFor(org))
 		if err := r.Seed(ctx, man.ToolCacheSeeds); err != nil {
 			return fmt.Errorf("seed %s tool cache: %w", org, err)
 		}
@@ -39,16 +39,16 @@ func (m *Manager) ProvisionHost(ctx context.Context, man core.DependencyManifest
 // seed is reported as e.g. "toolcache:node@22 (Acme)").
 func (m *Manager) HostDrift(ctx context.Context, man core.DependencyManifest) ([]string, error) {
 	if !m.cfg.Isolation.PerOrgUsers {
-		return provision.NewUbuntu(m.cfg.RunnerUser).Drift(ctx, man)
+		return provision.New(m.cfg.RunnerUser).Drift(ctx, man)
 	}
 	base := man
 	base.ToolCacheSeeds = nil
-	missing, err := provision.NewUbuntu(m.cfg.RunnerUser).Drift(ctx, base)
+	missing, err := provision.New(m.cfg.RunnerUser).Drift(ctx, base)
 	if err != nil {
 		return nil, err
 	}
 	for _, org := range m.cfg.OrgNames() {
-		r := provision.NewUbuntuFor(m.cfg.RunnerUserFor(org), m.cfg.ToolCacheFor(org))
+		r := provision.NewFor(m.cfg.RunnerUserFor(org), m.cfg.ToolCacheFor(org))
 		perOrg, err := r.Drift(ctx, core.DependencyManifest{ToolCacheSeeds: man.ToolCacheSeeds})
 		if err != nil {
 			return nil, err

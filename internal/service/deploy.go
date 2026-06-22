@@ -57,7 +57,10 @@ func (m *Manager) GetOrCreateGroup(ctx context.Context, org, name string) (core.
 	return m.CreateGroup(ctx, org, name, "all")
 }
 
-func (m *Manager) linuxDownload(ctx context.Context, org string) (runner.Download, error) {
+// agentDownload returns the x64 runner archive GitHub currently publishes for the org
+// (URL + publisher SHA256). The OS is fixed per build via runner.AssetOS ("linux" /
+// "win"), matching GitHub's runner-application API OS string.
+func (m *Manager) agentDownload(ctx context.Context, org string) (runner.Download, error) {
 	c, err := m.client(ctx, org)
 	if err != nil {
 		return runner.Download{}, err
@@ -67,11 +70,11 @@ func (m *Manager) linuxDownload(ctx context.Context, org string) (runner.Downloa
 		return runner.Download{}, err
 	}
 	for _, d := range ds {
-		if d.OS == "linux" && d.Arch == "x64" {
+		if d.OS == runner.AssetOS && d.Arch == "x64" {
 			return runner.Download{URL: d.URL, SHA256: d.SHA256}, nil
 		}
 	}
-	return runner.Download{}, fmt.Errorf("GitHub offered no linux/x64 runner download for %s", org)
+	return runner.Download{}, fmt.Errorf("GitHub offered no %s/x64 runner download for %s", runner.AssetOS, org)
 }
 
 // resolveDownload picks the agent tarball to install for an org, honoring an
@@ -89,7 +92,7 @@ func (m *Manager) linuxDownload(ctx context.Context, org string) (runner.Downloa
 // That is the safe failure: a pin is a deliberate act, and a deliberate act that
 // cannot be made safe should stop, not silently downgrade integrity.
 func (m *Manager) resolveDownload(ctx context.Context, org, target string) (runner.Download, error) {
-	dl, err := m.linuxDownload(ctx, org)
+	dl, err := m.agentDownload(ctx, org)
 	if err != nil {
 		return runner.Download{}, err
 	}
@@ -121,13 +124,15 @@ func (m *Manager) installRootFor(org string) string {
 // one place instead of being recomputed at every call site.
 func (m *Manager) orchestratorFor(org string) runner.Orchestrator {
 	opts := runner.Options{
-		User:        m.cfg.RunnerUserFor(org),
-		CacheRoot:   m.cfg.CacheRootFor(org), // "" in single-user mode → NewUbuntu defaults
-		ToolCache:   m.cfg.ToolCacheFor(org), // "" in single-user mode → NewUbuntu defaults
-		Resources:   m.cfg.ResourcesFor(org),
-		Org:         org,
-		Isolated:    m.cfg.Isolation.PerOrgUsers,
-		ProtectProc: m.cfg.Hardening.ProtectProc,
+		User:          m.cfg.RunnerUserFor(org),
+		CacheRoot:     m.cfg.CacheRootFor(org), // "" in single-user mode → NewUbuntu defaults
+		ToolCache:     m.cfg.ToolCacheFor(org), // "" in single-user mode → NewUbuntu defaults
+		Resources:     m.cfg.ResourcesFor(org),
+		Org:           org,
+		Isolated:      m.cfg.Isolation.PerOrgUsers,
+		ProtectProc:   m.cfg.Hardening.ProtectProc,
+		DinD:          m.cfg.Docker.RootlessDinD,
+		BuildkitImage: m.cfg.Docker.BuildkitImage,
 	}
 	// Auto-capacity mode bounds ALL runners' aggregate memory via a shared slice
 	// (machine-relative, so it scales with the host). Left empty otherwise, keeping
@@ -137,11 +142,14 @@ func (m *Manager) orchestratorFor(org string) runner.Orchestrator {
 		opts.SliceMemoryMax = m.cfg.SliceMemoryMaxOrDefault()
 	}
 	// An ephemeral slot unit's ExecStart calls back into this srm binary; bake its
-	// real path (falls back to DefaultSelfExe if undeterminable).
+	// real path (falls back to DefaultSelfExe if undeterminable) and the config file
+	// this srm loaded from, so the detached cycle loads the same config the lane was
+	// created with (mirrors the Windows supervisor's --config bake).
 	if exe, err := os.Executable(); err == nil {
 		opts.SelfExe = exe
 	}
-	return runner.NewUbuntu(m.installRootFor(org), opts)
+	opts.ConfigPath = m.cfgPath
+	return runner.NewForHost(m.installRootFor(org), opts)
 }
 
 // CreateRunners provisions Count persistent runners on the local host. It must
@@ -162,7 +170,7 @@ func (m *Manager) CreateRunners(ctx context.Context, spec DeploySpec, progress c
 		}
 	}
 
-	dl, err := m.linuxDownload(ctx, org)
+	dl, err := m.agentDownload(ctx, org)
 	if err != nil {
 		return nil, err
 	}

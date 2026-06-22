@@ -55,21 +55,11 @@ func (v settingsView) view() string {
 		t.PanelTtl.Render("Capacity policy"),
 		kv("mode", v.modeLabel()),
 		"",
-		t.PanelTtl.Render("Per-runner caps (each runner's cgroup)"),
-		kv("MemoryHigh", orDash(s.Effective.MemoryHigh)),
-		kv("MemoryMax", orDash(s.Effective.MemoryMax)),
-		kv("MemorySwapMax", orDash(s.Effective.MemorySwapMax)),
-		kv("CPUWeight", orDash(s.Effective.CPUWeight)),
-		kv("TasksMax", orDash(s.Effective.TasksMax)),
 	}
-
-	if s.Mode == config.ResourceModeAuto {
-		lines = append(lines,
-			"",
-			t.PanelTtl.Render("Aggregate ceiling (all runners combined)"),
-			kv("srm.slice Max", s.SliceMax),
-		)
-	}
+	// The caps panel differs by OS: Linux shows the per-runner cgroup directives plus
+	// the aggregate slice; Windows shows the Job-Object subset (MemoryMax + TasksMax,
+	// ephemeral jobs only). See capLines in screen_settings_{linux,windows}.go.
+	lines = append(lines, v.capLines(kv, orDash)...)
 
 	lines = append(lines, "", kv("config file", t.Faint.Render(s.Path)))
 	if s.PerOrg {
@@ -97,7 +87,7 @@ func (v settingsView) modeLabel() string {
 	case !v.snap.Effective.IsZero():
 		return t.StatusInfo.Render("manual") + t.Crumb.Render(" - literal caps below")
 	default:
-		return t.Offline.Render("off") + t.Crumb.Render(" - jobs are UNBOUNDED; switch to auto to OOM-proof")
+		return t.Offline.Render("off") + t.Crumb.Render(offModeHint)
 	}
 }
 
@@ -131,7 +121,7 @@ func newSettingsForm(cur service.ResourceSettings) *settingsForm {
 				huh.NewOption("Auto - machine-relative %, scales with host RAM", config.ResourceModeAuto),
 				huh.NewOption("Manual / off - literal values (empty field = unbounded)", ""),
 			).Value(&sf.mode),
-			huh.NewNote().Description("Empty field = pre-packaged auto default (shown as placeholder) in Auto mode, or unbounded in Manual mode."),
+			huh.NewNote().Description(capNoteDesc),
 			huh.NewInput().Title("Per-runner MemoryHigh (soft cap)").Placeholder(auto.MemoryHigh).Value(&sf.memHigh).Validate(systemdMemValue),
 			huh.NewInput().Title("Per-runner MemoryMax (hard cap)").Placeholder(auto.MemoryMax).Value(&sf.memMax).Validate(systemdMemValue),
 			huh.NewInput().Title("Per-runner MemorySwapMax (0 = no swap)").Placeholder(auto.MemorySwapMax).Value(&sf.memSwap).Validate(systemdMemValue),

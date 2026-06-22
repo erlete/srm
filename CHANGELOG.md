@@ -4,7 +4,63 @@ All notable changes to `srm` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-06-22
+
+Major release: srm gains a second OS target (Windows x64) and its two parallel
+internal trees are unified into one cross-compiling codebase.
+
+### Added
+- **Windows x64 support** - srm manages self-hosted runners on Windows x64 with the
+  same CLI + TUI as Linux. Persistent runners install as Windows Services (`config.cmd
+  --runasservice` under `NT AUTHORITY\NETWORK SERVICE`); ephemeral lanes run a long-lived
+  supervisor service that mints a single-use JIT registration per job (the Service Control
+  Manager stand-in for systemd `Restart=always`); the tool-cache + build-cache env is
+  injected via the per-service registry `Environment` (`AGENT_TOOLSDIRECTORY` ->
+  `C:\hostedtoolcache`); ephemeral jobs are resource-capped via a Job Object (`MemoryMax`
+  + `TasksMax`) and get a fresh wiped profile each cycle (the Windows analog of the per-job
+  `_home`); the host dependency layer provisions via winget/choco. Install with
+  `install.ps1`. Live-validated end-to-end.
+- **Rootless Docker for ephemeral jobs** (`docker.rootlessDinD`, opt-in) - ephemeral
+  lanes can build images with **no host root and no shared `docker` group**. Each job
+  cycle starts a per-job rootless `dockerd` as the per-org user (its own user namespace,
+  socket under `/run/srm/dind/<org>/<slot>`), injects `DOCKER_HOST` at it, pre-seeds a
+  rootless-capable `buildx` builder and points `BUILDX_BUILDER` at it (so the default
+  `docker/setup-buildx-action` + `docker-container` driver, including `cache type=gha`,
+  works with **no workflow change**), then tears the daemon down and wipes its data-root
+  on cycle reset - so no image layers, build cache, or registry creds leak between jobs.
+  `EnsureBase` allocates a non-overlapping `/etc/subuid`+`/etc/subgid` range per org user;
+  `doctor` probes the host prerequisites (rootless docker binaries, `uidmap`, `slirp4netns`,
+  `fuse-overlayfs`, unprivileged userns, the subid range). The daemon is pinned to the
+  cgroupfs cgroup driver and the builder to the standard BuildKit image +
+  `--oci-worker-no-process-sandbox`; the DinD slot unit is deliberately less hardened than
+  the strict ephemeral unit (nested rootless build containers must mount `/proc`,
+  `sethostname`, write cgroupfs, and call the setuid id-map helpers) - see
+  `docs/CONFIGURATION.md` and `docs/EPHEMERAL.md`. Live-validated on Ubuntu 24.04 / cgroup v2.
+
+### Changed
+- **One cross-compiling codebase.** The Windows port was staged in a parallel
+  `internal-win/*` mirror; it is now folded back into a single `internal/*` + `cmd/srm`
+  tree that compiles to Linux x64 (systemd + apt) and Windows x64 (Service Control Manager
+  + winget) via Go build tags. One `srm` binary per OS from one source - eliminating ~53
+  duplicated files and the cross-tree drift the mirror invited.
+
+### Fixed
+- **Ephemeral jobs now run with `HOME`/`USER`/`LOGNAME` set.** The ephemeral unit
+  starts as root and `setpriv`-drops per job; `setpriv` is not a login, so jobs ran
+  with `HOME` unset and `USER=root` - unlike every normal runner and unlike srm's own
+  persistent lanes (which get `HOME` from systemd `User=`). Any action that reads
+  `$HOME` broke: npm/`.netrc` auth, `git config --global`, `changesets/action`
+  computing `undefined/.netrc`. srm now sets them explicitly, with `HOME` a **fresh
+  per-job dir** (`{slot}/_home`, wiped each cycle) so the clean-slate guarantee holds
+  and it never collides with the org's persistent runners that share the passwd HOME.
+- **Rootless-DinD review fixes** (all fail-open, falling back to the prior behavior).
+  The ephemeral slot's `ExecStart` now bakes the active `--config` path, so a DinD lane
+  created against a non-default config no longer silently runs with the daemon off; CDI
+  is disabled in the pre-seeded buildkitd config (no GPU-discovery noise on a GPU-less
+  host); and the BuildKit image is cached across cycles on the build-tool cache root, so
+  the per-cycle data-root wipe no longer forces a registry re-pull.
+
+## [1.4.0] - 2026-06-21
 
 ### Added
 - **`srm runners upgrade`** - in-place upgrade of the actions/runner AGENT on this

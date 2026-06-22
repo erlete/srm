@@ -32,11 +32,15 @@ Each slot's unit runs `srm _runner-cycle --org X --slot N` as **root** on a loop
 2. Mint a JIT config (reads the App key in `/etc/srm` - root only).
 3. Record the runner id (`fsync`'d) **before** the job, so a crash leaves a
    reapable ghost.
-4. Reset the workspace (`_work`/`_diag`/`.runner`/`.credentials*`), keep the warm
-   binaries.
+4. Reset the workspace (`_work`/`_diag`/`_home`/`.runner`/`.credentials*`), keep the
+   warm binaries.
 5. **Drop root → `srm-<org>` via `setpriv`** (PAM-free), assert `euid != 0` first,
    write a `.ran-as` attestation, then run `run.sh --jitconfig <blob>` for exactly
-   one job.
+   one job. The job env is set explicitly (`setpriv` is not a login): `HOME` points at
+   a **fresh per-job `_home`** (wiped each cycle - no creds at rest, no clash with the
+   org's persistent runners that share the passwd HOME), and `USER`/`LOGNAME` are the
+   per-org user. Without this, `$HOME`-reading actions (npm/`.netrc`, `git config
+   --global`, `changesets`) would see `HOME` unset and `USER=root`.
 6. After the job, if the runner is still registered (it should auto-deregister),
    reap it - reaping is by **registration state**, not run.sh's exit code (which is
    unreliable).
@@ -95,6 +99,44 @@ runners share an `srm.slice` aggregate ceiling that **auto-scales with the host*
 see `config.example.yaml`. `MemorySwapMax=0` keeps a hungry job from swap-thrashing
 the host. The slice ceiling defaults to 75% of RAM and is tunable via
 `sliceMemoryMax` (or the TUI Settings panel).
+
+## Building images (rootless Docker)
+
+Off by default. With `docker.rootlessDinD: true` (see `docs/CONFIGURATION.md`), each
+ephemeral cycle gets a **per-job rootless `dockerd`**, so jobs can `docker build` /
+`buildx build` with **no host root and no shared `docker` group**:
+
+- The cycle starts `dockerd-rootless.sh` as the per-org user (its own user namespace,
+  socket at `/run/srm/dind/<org>/<slot>/docker.sock`), waits for it, then injects
+  `DOCKER_HOST` into the job. srm also pre-seeds a rootless-capable `buildx` builder
+  and sets `BUILDX_BUILDER`, so a stock `docker/setup-buildx-action` +
+  `docker/build-push-action` (incl. `cache type=gha` and `push` to a registry) works
+  with **no workflow change**.
+- The daemon and its data-root are torn down + wiped each cycle (the data-root joins
+  the per-job reset), so image layers, build cache, and registry creds never leak
+  between jobs.
+- The daemon uses the **cgroupfs** cgroup driver and the **standard** BuildKit image
+  with `--oci-worker-no-process-sandbox` (the `-rootless` image double-nests and fails
+  inside an already-rootless daemon).
+
+**Hardening trade-off:** a DinD slot unit must drop most of the strict ephemeral
+hardening - `NoNewPrivileges` (the setuid `newuidmap`/`newgidmap` helpers),
+`ProtectProc`, `ProtectHome`, `PrivateTmp`, `ProtectKernel*`, `ProtectHostname` -
+because the nested rootless build container has to mount `/proc`, `sethostname`,
+write cgroupfs, and map subordinate uids. It keeps `ProtectClock`, `LockPersonality`,
+`RestrictRealtime`, `LimitCORE`, and `ProtectControlGroups=false`. What still isolates
+the lane: the unprivileged per-org user, the rootless user namespace, per-org
+`subuid`/`subgid` separation, the per-job data-root wipe + daemon teardown, and the
+slot unit's own cgroup caps. Per-**container** cgroup limits are not enforced under
+cgroupfs, but whole-job bounds (the slot's `MemoryMax`/`srm.slice`) still apply. Note
+`ProtectProc` being off means a sibling org's user could read this lane's
+`/proc/<pid>/cmdline` (the single-use JIT blob) - a small window the strict lane
+closes. Enable DinD only on lanes that build images.
+
+**Host prerequisites** (srm does not install Docker): rootless `docker-ce` +
+`docker-ce-rootless-extras`, `uidmap`, `slirp4netns`, `fuse-overlayfs`, unprivileged
+user namespaces enabled. `srm doctor` probes all of these and the per-user subid
+range (allocated by `EnsureBase`).
 
 ## Honest effects
 

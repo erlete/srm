@@ -100,6 +100,24 @@ Migration is in place: `srm runners refresh [--org]` rewrites the drop-in
 | --- | --- | --- |
 | `protectProc` | bool | Adds `ProtectProc=invisible` to **persistent** runner units (ephemeral lanes always set it), hiding other users' `/proc` so a job can't read another org's unit cmdline. Default off → drop-in byte-identical. |
 
+## Docker (`docker`)
+
+Gives **ephemeral** jobs a rootless Docker daemon to build images against, with no
+host root and no shared `docker` group. Default off (no daemon, byte-identical to
+before). See `docs/EPHEMERAL.md` for the full model and the hardening trade-off.
+
+| Key | Type | Purpose |
+| --- | --- | --- |
+| `rootlessDinD` | bool | Per-job rootless `dockerd` on ephemeral slots; `DOCKER_HOST`/`BUILDX_BUILDER` injected so a stock `setup-buildx-action` build works unchanged. Daemon + data-root wiped each cycle. |
+| `buildkitImage` | string | Override the pre-seeded buildx BuildKit image. Default `moby/buildkit:buildx-stable-1` (the **standard** image - the `-rootless` tag double-nests and fails inside a rootless daemon). |
+
+Requires host prerequisites srm does not install (add via the `host` manifest below
+or a `setupScript`): `docker-ce` + `docker-ce-rootless-extras`, `uidmap`,
+`slirp4netns`, `fuse-overlayfs`, and `kernel.unprivileged_userns_clone=1` /
+`user.max_user_namespaces>0`. `srm doctor` probes these and the per-user subid range
+(allocated automatically by `EnsureBase`). DinD slots run a less-hardened unit than
+the strict ephemeral default - see `docs/EPHEMERAL.md`.
+
 ## Host (`host`)
 
 Host-once dependency manifest applied by `srm provision`; `srm doctor` reports
