@@ -4,6 +4,21 @@ All notable changes to `srm` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-06-23
+
+### Fixed
+- **Docker container actions broke on rootless-DinD lanes** (`docker: pull access denied
+  for <hash>, repository does not exist`). The per-job rootless buildx builder
+  (`srm-rootless`, docker-container driver) is pointed at by `BUILDX_BUILDER`, so EVERY
+  `docker build` on the lane - including the runner's own build of a Docker container
+  action (e.g. `appleboy/ssh-action`) - ran on it. The docker-container driver leaves a
+  no-output build only in BuildKit's cache, never in the daemon image store, so the
+  runner's follow-up `docker run <hash>:<tag>` could not find the image locally and fell
+  back to pulling `<hash>` from Docker Hub, failing with "pull access denied". The builder
+  is now created with `--driver-opt default-load=true`, which implicitly `--load`s every
+  no-output build into the daemon store (matching the classic docker driver). Builds that
+  name an output (`--push`/`--load`/`--output`) are unaffected. Needs buildx >= 0.14.
+
 ## [2.0.0] - 2026-06-22
 
 Major release: srm gains a second OS target (Windows x64) and its two parallel

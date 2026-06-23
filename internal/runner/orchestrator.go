@@ -1887,11 +1887,24 @@ func (u *ubuntu) seedRootlessBuilder(ctx context.Context, org, slot string, usr 
 // createRootlessBuilder runs `docker buildx create --bootstrap` for the rootless builder,
 // optionally pinning a buildkitd config file (the CDI disable). An empty buildkitdConfig
 // omits the flag entirely.
+//
+// default-load=true is REQUIRED, not cosmetic. The docker-container driver keeps a build's
+// result ONLY in the builder's BuildKit cache unless an output is named (--push/--load/
+// --output); a plain `docker build -t TAG` leaves NOTHING in the daemon image store. Because
+// BUILDX_BUILDER points EVERY `docker build` at this builder (including the runner's own), the
+// runner's container-action build path breaks: GitHub's runner builds each Docker container
+// action (e.g. appleboy/ssh-action) with `docker build -t <hash>:<tag>` and then immediately
+// `docker run <hash>:<tag>` - with the image absent from the store, docker run falls back to
+// PULLING <hash> from Docker Hub and dies with "pull access denied ... repository does not
+// exist". default-load makes the docker-container driver implicitly --load every no-output
+// build into the daemon store (matching the classic docker driver), so the run finds it.
+// Builds that DO name an output (--push/--load/--output) are unaffected. Needs buildx >= 0.14.
 func (u *ubuntu) createRootlessBuilder(ctx context.Context, usr *user.User, home, dockerConfig, rt, sock, buildkitdConfig string) error {
 	args := []string{"docker", "buildx", "create",
 		"--name", rootlessBuilderName,
 		"--driver", "docker-container",
 		"--driver-opt", "image=" + u.opts.BuildkitImage,
+		"--driver-opt", "default-load=true",
 		"--buildkitd-flags", "--oci-worker-no-process-sandbox",
 	}
 	if buildkitdConfig != "" {
