@@ -9,16 +9,16 @@ import (
 func TestParseSystemdBytes(t *testing.T) {
 	const totalRAM = uint64(8) << 30 // 8 GiB
 	cases := []struct {
-		in       string
-		total    uint64
-		wantVal  uint64
-		wantOK   bool
+		in      string
+		total   uint64
+		wantVal uint64
+		wantOK  bool
 	}{
 		{"2G", totalRAM, 2 << 30, true},
 		{"512M", totalRAM, 512 << 20, true},
 		{"1024K", totalRAM, 1 << 20, true},
 		{"1000000", totalRAM, 1000000, true},
-		{"25%", totalRAM, 2 << 30, true},   // 25% of 8 GiB = 2 GiB
+		{"25%", totalRAM, 2 << 30, true}, // 25% of 8 GiB = 2 GiB
 		{"100%", totalRAM, totalRAM, true},
 		{"0", totalRAM, 0, false},
 		{"", totalRAM, 0, false},

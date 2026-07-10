@@ -206,6 +206,19 @@ func (m *Manager) Uninstall(ctx context.Context, opts UninstallOpts) (UninstallR
 	return rep, nil
 }
 
+// UninstallPreview returns the blast-radius plan (what would be removed) without
+// mutating anything or making a GitHub call, regardless of the global flag.
+func (m *Manager) UninstallPreview(ctx context.Context, opts UninstallOpts) (UninstallReport, error) {
+	defer m.withDryRun(true)()
+	return m.Uninstall(ctx, opts)
+}
+
+// UninstallApply performs the uninstall for real (per-call dry-run = false).
+func (m *Manager) UninstallApply(ctx context.Context, opts UninstallOpts) (UninstallReport, error) {
+	defer m.withDryRun(false)()
+	return m.Uninstall(ctx, opts)
+}
+
 // uninstallBaseTargets computes the service users and host paths to remove, applying
 // the safety policy: only "srm*"-named users, only srm-private paths, and (in
 // single-user mode) never the shared /opt/hostedtoolcache. Per-runner trees are

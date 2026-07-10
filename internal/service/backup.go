@@ -8,7 +8,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// BackupConfig writes a timestamped backup of the config dir next to the config
+// file and returns the path. The safety net before any destructive lifecycle op.
+func (m *Manager) BackupConfig() (string, error) {
+	if m.cfgPath == "" {
+		return "", fmt.Errorf("no config path is set - nothing to back up")
+	}
+	dir := filepath.Dir(m.cfgPath)
+	out := filepath.Join(dir, fmt.Sprintf("srm-backup-%d.tar.gz", time.Now().Unix()))
+	return BackupConfigDir(dir, out)
+}
 
 // BackupConfigDir writes a gzip-compressed tar of every regular file directly
 // inside srcDir (the srm config dir: config.yaml, secrets.age, per-org *.pem) to

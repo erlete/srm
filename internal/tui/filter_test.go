@@ -16,9 +16,9 @@ import (
 
 func TestRunnersFilterNarrows(t *testing.T) {
 	v := newRunnersView(NewTheme())
-	v.setRows([]service.RunnerWithOrg{
-		{Org: "acme", Runner: core.Runner{Name: "r-1", Status: "online"}},
-		{Org: "globex", Runner: core.Runner{Name: "r-2", Status: "offline"}},
+	v.setRows([]service.FusedRunner{
+		{RunnerWithOrg: service.RunnerWithOrg{Org: "acme", Runner: core.Runner{Name: "r-1", Status: "online"}}},
+		{RunnerWithOrg: service.RunnerWithOrg{Org: "globex", Runner: core.Runner{Name: "r-2", Status: "offline"}}},
 	})
 	if len(v.rows) != 2 {
 		t.Fatalf("unfiltered rows = %d, want 2", len(v.rows))
@@ -32,9 +32,9 @@ func TestRunnersFilterNarrows(t *testing.T) {
 
 func TestEphemeralFilterNarrows(t *testing.T) {
 	v := newEphemeralView(NewTheme())
-	v.setRows([]service.EphemeralSlot{
-		{Org: "acme", Slot: "1", Active: true, UnitOK: true},
-		{Org: "globex", Slot: "2", Active: true, UnitOK: true},
+	v.setRows([]service.FusedSlot{
+		{EphemeralSlot: service.EphemeralSlot{Org: "acme", Slot: "1", Active: true, UnitOK: true}},
+		{EphemeralSlot: service.EphemeralSlot{Org: "globex", Slot: "2", Active: true, UnitOK: true}},
 	})
 	v.flt.input.SetValue("acme")
 	v.applyFilter()
@@ -58,7 +58,7 @@ func TestGroupsFilterNarrows(t *testing.T) {
 
 func TestHealthFilterNarrows(t *testing.T) {
 	v := newHealthView(NewTheme())
-	v.setReports([]healthReport{{Org: "acme"}, {Org: "globex"}})
+	v.setReports([]healthReport{{Org: "acme"}, {Org: "globex"}}, healthHost{})
 	v.flt.input.SetValue("glob")
 	v.applyFilter()
 	if len(v.reports) != 1 || v.reports[0].Org != "globex" {

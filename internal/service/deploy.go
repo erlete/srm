@@ -230,6 +230,64 @@ func (m *Manager) CreateRunners(ctx context.Context, spec DeploySpec, progress c
 	return names, nil
 }
 
+// RecreateRunner tears a persistent runner down and stands it back up on THIS host
+// with the SAME name, custom labels, and group (BACKLOG #2). It is the clean-slate
+// remedy for an unhealthy or stuck runner whose drop-in refresh is not enough. The
+// recreated runner gets a fresh GitHub registration (new id) under the same name.
+// groupID is resolved to the group NAME the create path expects (0 / Default -> the
+// default group). Must run as root. Honors dry-run.
+func (m *Manager) RecreateRunner(ctx context.Context, org, name string, labels []string, groupID int64) error {
+	org, err := m.requireOrg(org)
+	if err != nil {
+		return err
+	}
+	// Resolve the group name before teardown (CreateRunner takes a group NAME). A
+	// lookup failure is non-fatal: recreate then lands the runner in the default group.
+	group := ""
+	if groupID > DefaultGroupID {
+		if gs, lerr := m.ListGroups(ctx, org); lerr == nil {
+			for _, g := range gs {
+				if g.ID == groupID {
+					group = g.Name
+					break
+				}
+			}
+		}
+	}
+	if err := m.DestroyRunner(ctx, org, name); err != nil {
+		return fmt.Errorf("destroy %s: %w", name, err)
+	}
+	if m.cfg.DryRun {
+		return nil
+	}
+	dl, err := m.agentDownload(ctx, org)
+	if err != nil {
+		return err
+	}
+	c, err := m.client(ctx, org)
+	if err != nil {
+		return err
+	}
+	tok, err := c.CreateRegistrationToken(ctx, org)
+	if err != nil {
+		return fmt.Errorf("mint registration token: %w", err)
+	}
+	orch := m.orchestratorFor(org)
+	if err := orch.EnsureBase(ctx); err != nil {
+		return fmt.Errorf("provision host base: %w", err)
+	}
+	rspec := runner.RunnerSpec{Name: name, Org: org, URL: "https://github.com/" + org, Labels: labels, Group: group}
+	if err := orch.CreateRunner(ctx, rspec, dl, tok.Value); err != nil {
+		return fmt.Errorf("recreate %s: %w", name, err)
+	}
+	id, _ := orch.AgentID(org, name)
+	_ = m.recordCreated(RunnerRecord{
+		Kind: KindPersistent, Org: org, Name: name, GitHubRunnerID: id,
+		AgentVersion: runner.VersionFromURL(dl.URL), TemplateVersion: runner.CurrentDropInVersion,
+	})
+	return nil
+}
+
 // RefreshResult reports the outcome of refreshing one local runner's unit.
 type RefreshResult struct {
 	Org, Name string
@@ -249,8 +307,9 @@ type RefreshResult struct {
 // new user IN PLACE - no recreate or re-registration. Returns one result per
 // local runner plus any per-org list errors.
 // orgFilter (when non-empty) restricts the refresh to a single org - used to
-// stage the isolation migration one org at a time.
-func (m *Manager) RefreshLocalUnits(ctx context.Context, orgFilter string) ([]RefreshResult, map[string]error) {
+// stage the isolation migration one org at a time. only (when non-empty) further
+// restricts to a specific runner selection (keys via RunnerRef).
+func (m *Manager) RefreshLocalUnits(ctx context.Context, orgFilter string, only map[string]bool) ([]RefreshResult, map[string]error) {
 	all, errs := m.ListAllRunners(ctx)
 	ensured := map[string]bool{}
 	var out []RefreshResult
@@ -260,6 +319,9 @@ func (m *Manager) RefreshLocalUnits(ctx context.Context, orgFilter string) ([]Re
 		}
 		if orgFilter != "" && row.Org != orgFilter {
 			continue
+		}
+		if len(only) > 0 && !only[RunnerRef(row.Org, row.Runner.Name)] {
+			continue // a bounded selection is active and this runner is not in it
 		}
 		res := RefreshResult{Org: row.Org, Name: row.Runner.Name}
 		if row.Runner.Busy {
@@ -318,6 +380,22 @@ func (m *Manager) PruneDepCache(ctx context.Context, maxAge time.Duration) (runn
 		}
 	}
 	return total, firstErr
+}
+
+// PruneDepCacheRun is PruneDepCache with per-call dry-run threading: dryRun=true
+// reports what would be evicted (for a preview) without deleting; dryRun=false
+// performs the eviction. Same save/restore approach as ReconcileFix (decision #10).
+func (m *Manager) PruneDepCacheRun(ctx context.Context, maxAge time.Duration, dryRun bool) (runner.PruneStats, error) {
+	defer m.withDryRun(dryRun)()
+	return m.PruneDepCache(ctx, maxAge)
+}
+
+// CacheRetentionDaysOrDefault is the configured dep-cache age cutoff, or 30 days.
+func (m *Manager) CacheRetentionDaysOrDefault() int {
+	if m.cfg.CacheRetentionDays > 0 {
+		return m.cfg.CacheRetentionDays
+	}
+	return 30
 }
 
 // DestroyRunner removes a runner from THIS host (stops + uninstalls the service,

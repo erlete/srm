@@ -82,7 +82,7 @@ type ReconcileReport struct {
 // are deregistered. orphan-github is always report-only (a runner with no unit
 // here is likely another host's). orgFilter (non-empty) scopes to one org. Must
 // run as root on the host.
-func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFilter string) (ReconcileReport, error) {
+func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFilter string, dryRun bool) (ReconcileReport, error) {
 	rep := ReconcileReport{}
 
 	// GitHub side, keyed by (org, name).
@@ -183,7 +183,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 		// gated exception to "reconcile never deletes on GitHub".
 		if runner.IsEphemeralRunnerName(row.Runner.Name) {
 			if reapEphemeral && row.Runner.Status != "online" && !row.Runner.Busy {
-				m.maybeReapGhost(ctx, &rep, row)
+				m.maybeReapGhost(ctx, &rep, row, dryRun)
 			}
 			continue
 		}
@@ -216,7 +216,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 
 	// Repair (host-side only; honors dry-run).
 	if fix {
-		apply := !m.cfg.DryRun
+		apply := !dryRun
 		rep.Applied = apply
 		for i := range rep.Runners {
 			m.repairRunner(ctx, &rep.Runners[i], apply)
@@ -225,12 +225,30 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 	return rep, nil
 }
 
+// ReconcileFix runs a host-side repair pass scoped to orgFilter ("" = all orgs).
+// dryRun=true produces the PLAN (per-runner Fix reads "would ...") without touching
+// anything; dryRun=false applies it. The decision is passed EXPLICITLY into
+// Reconcile (never through the shared config flag), so concurrent Fix/Reap plan
+// goroutines dispatched from the TUI can't race on m.cfg.DryRun or leave it stuck.
+// Must run as root on the host.
+func (m *Manager) ReconcileFix(ctx context.Context, orgFilter string, dryRun bool) (ReconcileReport, error) {
+	return m.Reconcile(ctx, true, false, orgFilter, dryRun)
+}
+
+// ReapEphemeral runs the gated ephemeral-ghost reap scoped to orgFilter. dryRun=true
+// reports what would be deregistered (Reaped entries read "would reap"); dryRun=false
+// performs the deregistration. The dry-run flag is threaded per call, same as
+// ReconcileFix.
+func (m *Manager) ReapEphemeral(ctx context.Context, orgFilter string, dryRun bool) (ReconcileReport, error) {
+	return m.Reconcile(ctx, false, true, orgFilter, dryRun)
+}
+
 // maybeReapGhost reaps an offline ephemeral registration ONLY if it is genuinely
 // abandoned: this host owns the slot lane, and the registration is not the lane's
 // current in-flight id. This excludes the mint→connect window (where a live runner
 // is briefly offline) and another host's registrations - a false positive here
 // would kill an in-flight CI job, since this is the one gated GitHub-delete path.
-func (m *Manager) maybeReapGhost(ctx context.Context, rep *ReconcileReport, row RunnerWithOrg) {
+func (m *Manager) maybeReapGhost(ctx context.Context, rep *ReconcileReport, row RunnerWithOrg, dryRun bool) {
 	slot, ok := runner.EphemeralSlotFromName(row.Runner.Name, row.Org)
 	if !ok {
 		return // malformed name - never touch
@@ -248,21 +266,21 @@ func (m *Manager) maybeReapGhost(ctx context.Context, rep *ReconcileReport, row 
 			return
 		}
 	}
-	m.reapGhost(ctx, rep, row)
+	m.reapGhost(ctx, rep, row, dryRun)
 }
 
 // reapGhost deregisters an offline ephemeral JIT registration (a ghost from a
 // crashed cycle) and records the outcome. Honors dry-run. This is the ONLY path
 // in reconcile that deletes a GitHub runner, gated behind --reap-ephemeral; callers
 // must pre-screen via maybeReapGhost.
-func (m *Manager) reapGhost(ctx context.Context, rep *ReconcileReport, row RunnerWithOrg) {
+func (m *Manager) reapGhost(ctx context.Context, rep *ReconcileReport, row RunnerWithOrg, dryRun bool) {
 	rs := RunnerState{
 		Org: row.Org, Name: row.Runner.Name, OnGitHub: true,
 		Class: ClassEphemeralStuck, Detail: "offline ephemeral registration (ghost)",
 		MemPeak: -1, MemMax: -1, MemCur: -1, OOMKills: -1, // not inspected → unknown, not 0
 	}
 	switch {
-	case m.cfg.DryRun:
+	case dryRun:
 		rs.Fix = "would reap (deregister)"
 	default:
 		// 404 = a concurrent cycle already reaped it; treat as success, not failure.

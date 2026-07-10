@@ -37,7 +37,9 @@ func (v *settingsView) setSize(w, _ int) { v.width = w }
 
 func (v *settingsView) setSnapshot(s settingsSnapshot) { v.snap = s }
 
-func (v settingsView) view() string {
+// card renders the capacity-policy panel at the given width (the LEFT half of the
+// Settings split). The Lifecycle menu is the right half (see Model.settingsBody).
+func (v settingsView) card(w int) string {
 	t := v.theme
 	s := v.snap
 
@@ -66,17 +68,11 @@ func (v settingsView) view() string {
 		lines = append(lines, kv("note", t.Busy.Render("some orgs have per-org overrides (edit YAML directly)")))
 	}
 
-	card := t.Panel.Width(v.cardWidth()).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
-	hint := t.Help.Render("press e to edit · changes apply to NEW runners; run `srm runners refresh` to push to existing ones")
-	return lipgloss.JoinVertical(lipgloss.Left, card, "", hint)
-}
-
-func (v settingsView) cardWidth() int {
-	w := v.width - 4
-	if w < 40 {
-		w = 40
+	inner := w - 4
+	if inner < 36 {
+		inner = 36
 	}
-	return w
+	return t.Panel.Width(inner).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 }
 
 func (v settingsView) modeLabel() string {

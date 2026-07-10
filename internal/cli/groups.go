@@ -14,8 +14,48 @@ func newGroupsCmd() *cobra.Command {
 		Use:   "groups",
 		Short: "List and create runner groups",
 	}
-	cmd.AddCommand(newGroupsListCmd(), newGroupsCreateCmd())
+	cmd.AddCommand(newGroupsListCmd(), newGroupsCreateCmd(), newGroupsReposCmd())
 	return cmd
+}
+
+// newGroupsReposCmd lists the repositories the org's App can enumerate for
+// runner-group repo access (the same set the TUI picker shows). Useful to confirm
+// what's assignable - private repos appear only if the App has repository access.
+func newGroupsReposCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "repos",
+		Short: "List repositories assignable to a runner group (--org, or the sole org)",
+		RunE: func(*cobra.Command, []string) error {
+			mgr, closeLog, err := buildManager()
+			if err != nil {
+				return err
+			}
+			defer closeLog()
+			if err := requireOrgs(mgr); err != nil {
+				return err
+			}
+			org, err := targetOrg(mgr)
+			if err != nil {
+				return err
+			}
+			repos, err := mgr.ListOrgRepos(context.Background(), org)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("%d repositories visible to the %s App:\n", len(repos), org)
+			for _, r := range repos {
+				vis := "public"
+				if r.Private {
+					vis = "private"
+				}
+				fmt.Printf("  %-8s %s (id %d)\n", vis, r.FullName, r.ID)
+			}
+			if len(repos) == 0 {
+				fmt.Println("  (none - grant the App repository access to assign private repos)")
+			}
+			return nil
+		},
+	}
 }
 
 func newGroupsListCmd() *cobra.Command {

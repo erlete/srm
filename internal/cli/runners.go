@@ -511,7 +511,7 @@ func newRunnersRefreshCmd() *cobra.Command {
 					return fmt.Errorf("org %q not configured", flagOrg)
 				}
 			}
-			results, errs := mgr.RefreshLocalUnits(context.Background(), flagOrg)
+			results, errs := mgr.RefreshLocalUnits(context.Background(), flagOrg, nil)
 			for _, org := range mgr.OrgNames() {
 				if e := errs[org]; e != nil {
 					fmt.Printf("WARN %s: %v\n", org, e)

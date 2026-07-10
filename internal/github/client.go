@@ -54,6 +54,15 @@ type Client interface {
 	DeleteRunner(ctx context.Context, org string, id int64) error
 	ListGroups(ctx context.Context, org string) ([]core.Group, error)
 	CreateGroup(ctx context.Context, org, name, visibility string) (core.Group, error)
+	UpdateGroup(ctx context.Context, org string, id int64, name, visibility string) (core.Group, error)
+	DeleteGroup(ctx context.Context, org string, id int64) error
+	ListGroupRepos(ctx context.Context, org string, groupID int64) ([]core.Repo, error)
+	SetGroupRepos(ctx context.Context, org string, groupID int64, repoIDs []int64) error
+	ListGroupRunnerIDs(ctx context.Context, org string, groupID int64) ([]int64, error)
+	AddRunnerToGroup(ctx context.Context, org string, groupID, runnerID int64) error
+	RemoveRunnerFromGroup(ctx context.Context, org string, groupID, runnerID int64) error
+	ListOrgRepos(ctx context.Context, org string) ([]core.Repo, error)
+	FindRunnerJob(ctx context.Context, owner, repo, runnerName string) (*core.RunnerJob, bool, error)
 	GenerateJITConfig(ctx context.Context, org string, req JITRequest) (JITConfig, error)
 	CreateRegistrationToken(ctx context.Context, org string) (Token, error)
 	CreateRemoveToken(ctx context.Context, org string) (Token, error)
@@ -99,5 +108,19 @@ func toCoreGroup(g *gh.RunnerGroup) core.Group {
 		Visibility:   g.GetVisibility(),
 		Default:      g.GetDefault(),
 		AllowsPublic: g.GetAllowsPublicRepositories(),
+	}
+}
+
+func toCoreRepo(r *gh.Repository) core.Repo {
+	pushed := ""
+	if t := r.GetPushedAt(); !t.IsZero() {
+		pushed = t.Format(time.RFC3339)
+	}
+	return core.Repo{
+		ID:       r.GetID(),
+		Name:     r.GetName(),
+		FullName: r.GetFullName(),
+		Private:  r.GetPrivate(),
+		PushedAt: pushed,
 	}
 }

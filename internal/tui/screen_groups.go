@@ -15,7 +15,7 @@ import (
 // filter and a colored detail line for the selection (mirrors the runners view).
 type groupsView struct {
 	tbl   table.Model
-	cols  []table.Column        // base column widths (re-fitted to the terminal on resize)
+	cols  []table.Column         // base column widths (re-fitted to the terminal on resize)
 	all   []service.GroupWithOrg // full set
 	rows  []service.GroupWithOrg // filtered (mirrors the table rows)
 	theme Theme

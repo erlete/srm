@@ -12,12 +12,12 @@ import (
 
 func TestStripFirstComponent(t *testing.T) {
 	cases := map[string]string{
-		"node-v22.11.0-win-x64/node.exe":      "node.exe",
+		"node-v22.11.0-win-x64/node.exe":       "node.exe",
 		"node-v22.11.0-win-x64/node_modules/x": "node_modules/x",
 		"go/bin/go.exe":                        "bin/go.exe",
 		"node-v22.11.0-win-x64/":               "", // the top-level dir entry itself
 		"go/":                                  "",
-		"single":                              "", // no separator => nothing below the top
+		"single":                               "", // no separator => nothing below the top
 		"/leading/slash/file":                  "slash/file",
 	}
 	for in, want := range cases {

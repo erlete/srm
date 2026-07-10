@@ -24,10 +24,12 @@ type EphemeralSlot struct {
 	Active   bool
 	Restarts int
 	UnitOK   bool
-	MemPeak  int64 // cgroup bytes, -1 unknown
-	MemMax   int64 // cgroup bytes, -1 unlimited/unknown
-	MemCur   int64 // cgroup live bytes, -1 unknown
-	OOMKills int64 // cgroup memory.events oom_kill count, -1 unknown (0 = none)
+	MemPeak  int64    // cgroup bytes, -1 unknown
+	MemMax   int64    // cgroup bytes, -1 unlimited/unknown
+	MemCur   int64    // cgroup live bytes, -1 unknown
+	OOMKills int64    // cgroup memory.events oom_kill count, -1 unknown (0 = none)
+	GroupID  int64    // runner group minted into this slot's JIT registrations (0 = unknown)
+	Labels   []string // custom labels minted into this slot's JIT registrations
 }
 
 // IsEphemeralRunnerName reports whether a GitHub runner name was minted by an srm
@@ -55,12 +57,19 @@ func (m *Manager) ListEphemeralSlots(ctx context.Context, orgFilter string) ([]E
 		if !ok || (orgFilter != "" && org != orgFilter) {
 			continue
 		}
-		insp := m.orchestratorFor(org).InspectEphemeral(ctx, org, slot)
-		out = append(out, EphemeralSlot{
+		orch := m.orchestratorFor(org)
+		insp := orch.InspectEphemeral(ctx, org, slot)
+		es := EphemeralSlot{
 			Org: org, Slot: slot, Active: insp.Active, Restarts: insp.Restarts,
 			UnitOK: insp.UnitOK, MemPeak: insp.MemPeakBytes, MemMax: insp.MemMaxBytes,
 			MemCur: insp.MemCurBytes, OOMKills: insp.OOMKills,
-		})
+		}
+		// The slot's group + labels live in its persisted JIT mint params (host-only,
+		// best-effort - a slot that never ran a cycle may not have them yet).
+		if p, perr := orch.EphemeralMintParams(org, slot); perr == nil {
+			es.GroupID, es.Labels = p.GroupID, p.Labels
+		}
+		out = append(out, es)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Org != out[j].Org {
@@ -181,6 +190,50 @@ func (m *Manager) DestroyEphemeralSlot(ctx context.Context, org, slot string) er
 	// The lane is gone; drop its manifest entry (advisory).
 	_ = m.forget(KindEphemeral, org, slot)
 	return err
+}
+
+// RecreateEphemeralSlot tears a slot lane down and stands it back up on THIS host
+// with the SAME slot id, labels, and group - the supported way to refresh a lane's
+// agent (its next cycle re-extracts the current agent). The slot's mint params are
+// captured BEFORE teardown removes them. Must run as root. Honors dry-run.
+func (m *Manager) RecreateEphemeralSlot(ctx context.Context, org, slot string) error {
+	org, err := m.requireOrg(org)
+	if err != nil {
+		return err
+	}
+	if !validSlot(slot) {
+		return fmt.Errorf("invalid slot %q (must be a positive integer)", slot)
+	}
+	orch := m.orchestratorFor(org)
+	// Capture labels + group before teardown (DestroyEphemeralSlot removes the lane).
+	params, perr := orch.EphemeralMintParams(org, slot)
+	if err := m.DestroyEphemeralSlot(ctx, org, slot); err != nil {
+		return fmt.Errorf("destroy slot %s: %w", slot, err)
+	}
+	if m.cfg.DryRun {
+		return nil
+	}
+	dl, err := m.agentDownload(ctx, org)
+	if err != nil {
+		return err
+	}
+	var labels []string
+	gid := int64(0)
+	if perr == nil {
+		labels, gid = params.Labels, params.GroupID
+	}
+	if gid == 0 {
+		gid = m.defaultGroupID(org)
+	}
+	espec := runner.EphemeralSlotSpec{Org: org, Slot: slot, URL: "https://github.com/" + org, Labels: labels, GroupID: gid}
+	if err := orch.EnsureEphemeralSlot(ctx, espec, dl); err != nil {
+		return fmt.Errorf("recreate slot %s: %w", slot, err)
+	}
+	_ = m.recordCreated(RunnerRecord{
+		Kind: KindEphemeral, Org: org, Name: slot,
+		AgentVersion: runner.VersionFromURL(dl.URL), TemplateVersion: runner.CurrentEphemeralVersion,
+	})
+	return nil
 }
 
 // defaultGroupID resolves the runner group for an ephemeral slot when none was

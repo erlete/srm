@@ -46,6 +46,26 @@ type Group struct {
 	AllowsPublic bool
 }
 
+// Repo is an organization repository, decoupled from the go-github wire type. It
+// backs the runner-group "Repository access" picker (assign repos to a group with
+// visibility "selected").
+type Repo struct {
+	ID       int64
+	Name     string // short name (e.g. "api")
+	FullName string // "org/api"
+	Private  bool
+	PushedAt string // RFC3339 last-push time; orders the current-job scan (recent first)
+}
+
+// RunnerJob is the workflow job a runner is currently executing, resolved by
+// scanning in-progress runs (there is no direct runner->job endpoint).
+type RunnerJob struct {
+	Repo     string // "org/repo"
+	Workflow string // workflow name
+	JobName  string // job name
+	URL      string // html_url of the job
+}
+
 // DependencyManifest describes the host-once dependency layer for a profile.
 // It is applied a single time during host provisioning, never per job.
 type DependencyManifest struct {

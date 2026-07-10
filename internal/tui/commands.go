@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os/exec"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -10,50 +11,6 @@ import (
 	"github.com/erlete/srm/internal/core"
 	"github.com/erlete/srm/internal/service"
 )
-
-// loadRunnersCmd fetches PERSISTENT runners off the event loop. orgFilter == ""
-// means all configured orgs (with host-locality); otherwise a single org. Ephemeral
-// JIT registrations are excluded - they churn every job and belong to the Ephemeral
-// panel, so the two natures are never shown together.
-func loadRunnersCmd(ctx context.Context, mgr *service.Manager, orgFilter string) tea.Cmd {
-	return func() tea.Msg {
-		if orgFilter != "" {
-			rs, err := mgr.ListRunners(ctx, orgFilter)
-			if err != nil {
-				return runnersMsg{err: err}
-			}
-			rows := make([]service.RunnerWithOrg, 0, len(rs))
-			for _, r := range rs {
-				if service.IsEphemeralRunnerName(r.Name) {
-					continue
-				}
-				rows = append(rows, service.RunnerWithOrg{
-					Org:    orgFilter,
-					Runner: r,
-					Local:  mgr.RunnerIsLocal(orgFilter, r.Name),
-				})
-			}
-			return runnersMsg{rows: rows}
-		}
-		all, errs := mgr.ListAllRunners(ctx)
-		rows := make([]service.RunnerWithOrg, 0, len(all))
-		for _, row := range all {
-			if service.IsEphemeralRunnerName(row.Runner.Name) {
-				continue
-			}
-			rows = append(rows, row)
-		}
-		return runnersMsg{rows: rows, err: firstErr(errs)}
-	}
-}
-
-// loadEphemeralCmd fetches the host-local ephemeral slot lanes off the event loop.
-func loadEphemeralCmd(ctx context.Context, mgr *service.Manager, orgFilter string) tea.Cmd {
-	return func() tea.Msg {
-		rows, err := mgr.ListEphemeralSlots(ctx, orgFilter)
-		return ephemeralMsg{rows: rows, err: err}
-	}
-}
 
 // loadSettingsCmd resolves the current capacity policy into a display snapshot.
 // It reads only in-memory config, so it never blocks, but stays a tea.Cmd to fit
@@ -103,7 +60,8 @@ func loadGroupsCmd(ctx context.Context, mgr *service.Manager, orgFilter string) 
 	}
 }
 
-// loadHealthCmd checks auth + retention per org (all, or one).
+// loadHealthCmd is the TUI doctor: auth + retention + agent-freshness per org,
+// plus a host-wide block (capacity mode + toolchain probes).
 func loadHealthCmd(ctx context.Context, mgr *service.Manager, orgFilter string) tea.Cmd {
 	return func() tea.Msg {
 		orgs := mgr.OrgNames()
@@ -130,10 +88,34 @@ func loadHealthCmd(ctx context.Context, mgr *service.Manager, orgFilter string) 
 				rep.RetentionDays = ret.Days
 				rep.RetentionMax = ret.MaxAllowedDays
 			}
+			cur, _, behind, ok := mgr.AgentVersionStatus(ctx, org)
+			rep.AgentCurrent, rep.AgentBehind, rep.AgentOK = cur, len(behind), ok
 			reps = append(reps, rep)
 		}
-		return healthMsg{reports: reps}
+		return healthMsg{reports: reps, host: hostDoctor(ctx, mgr)}
 	}
+}
+
+// hostDoctor probes this host: capacity mode, the box-wide stats (slice/disk/cache
+// via HostHealth), and whether the build toolchain the runners rely on is present.
+// exec.LookPath works on both OSes; the stats degrade off-host.
+func hostDoctor(ctx context.Context, mgr *service.Manager) healthHost {
+	mode := mgr.Config().ResourceMode
+	switch mode {
+	case "":
+		mode = "off (no per-runner caps)"
+	case config.ResourceModeAuto:
+		mode = "auto (machine-relative, scales with host RAM)"
+	default:
+		mode = mode + " (manual literal caps)"
+	}
+	tools := []string{"git", "docker", "node", "npm", "pnpm", "make"}
+	probes := make([]toolProbe, 0, len(tools))
+	for _, name := range tools {
+		path, err := exec.LookPath(name)
+		probes = append(probes, toolProbe{Name: name, Path: path, Found: err == nil})
+	}
+	return healthHost{CapacityMode: mode, Tools: probes, Stats: mgr.HostHealth(ctx)}
 }
 
 // deleteRunnerCmd deregisters a single (remote) runner via the API.
@@ -165,6 +147,16 @@ func destroyEphemeralSlotCmd(ctx context.Context, mgr *service.Manager, org, slo
 			return actionMsg{err: err}
 		}
 		return actionMsg{summary: fmt.Sprintf("destroyed ephemeral slot %s (%s)", slot, org)}
+	}
+}
+
+// saveRetentionCmd updates the org's artifact-and-log retention period.
+func saveRetentionCmd(ctx context.Context, mgr *service.Manager, org string, days int) tea.Cmd {
+	return func() tea.Msg {
+		if err := mgr.SetRetention(ctx, org, days); err != nil {
+			return actionMsg{err: err}
+		}
+		return actionMsg{summary: fmt.Sprintf("set %s retention to %d days", org, days)}
 	}
 }
 

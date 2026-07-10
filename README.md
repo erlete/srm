@@ -19,7 +19,7 @@ one or more organizations, on dedicated **Ubuntu x64** hosts.
 | Runner lifecycle | **Ephemeral / JIT** by default, systemd-supervised warm loop                                                               |
 | Dependency model | **Host-baked** - provision the host once; ephemeral runners consume it. `setupScripts` + bring-your-own-host escape hatches |
 | Containers       | Per-job container is an **opt-in per profile** (default: jobs use the host toolchain)                                      |
-| Multi-org        | First-class - many orgs in one config; every operation names its org (`--org`, or implicitly when one is configured); TUI cycles the view with `o` |
+| Multi-org        | First-class - many orgs in one config; every operation names its org (`--org`, or implicitly when one is configured); the TUI filters visible orgs with `o` |
 
 ## Architecture
 
@@ -44,7 +44,7 @@ with rate-limit-aware backoff (there is no bulk-delete API).
 | `internal/service`   | Orchestration: list/delete, bulk engine, policy guardrails, lifecycle          |
 | `internal/provision` | Host-once dependency manifest apply + drift (apt · setup scripts · cache paths) |
 | `internal/runner`    | On-machine agent: download/verify/extract, systemd units + drop-ins, cgroup caps/`srm.slice`, per-org isolation, ephemeral JIT supervise + cycle |
-| `internal/tui`       | Bubble Tea v2 UI - five-tab cockpit (Persistent/Ephemeral/Groups/Health/Settings), spinner, help, confirm modal, huh create wizard |
+| `internal/tui`       | Bubble Tea v2 UI - six-tab cockpit (Health/Persistent/Ephemeral/Groups/Drift/Settings) + control plane, spinner, help, confirm/typed-confirm/preview modals, huh create wizard |
 | `internal/cli`       | cobra commands (bare = TUI; `init`, `runners`, `groups`, `provision`, `doctor`, `cache`, `reconcile`, `version`) |
 
 ## Status - v1.0.0 (stable)
@@ -76,8 +76,10 @@ single-host deployment:
 - **Provisioning** - `srm provision` (apt / Node / corepack / seed) + `cache prune`.
 - **Reconcile & observability** - host-vs-GitHub drift audit + `--fix`, plus
   per-runner cgroup OOM-kill attribution, live + aggregate slice memory, OOM events.
-- **TUI** - five-tab cockpit (Persistent / Ephemeral / Groups / Health / Settings)
-  with a create wizard, filter, confirm modal, and a Settings capacity editor.
+- **TUI** - six-tab cockpit (Health / Persistent / Ephemeral / Groups / Drift /
+  Settings) with a create wizard, filter, confirm modal, a Drift audit + fix/reap
+  tab, a control plane (upgrade / rollback / refresh / prune / provision /
+  recreate), and a Settings capacity editor (with Lifecycle ops).
 - **Hardening** - non-root agents, per-unit systemd sandbox, opt-in `ProtectProc`
   on persistent units.
 
@@ -260,12 +262,15 @@ A tabbed, multi-org cockpit. Persistent and ephemeral runners have fully
 different natures, so they live in **separate, never-mistakable tabs** (distinct
 columns, create/destroy flows, and addressing - runner **name** vs **slot id**):
 
-- **Tabs** (`tab`/`shift+tab`): **Persistent** (cross-org runner table with
-  ORG/MACHINE columns + a color-coded detail line), **Ephemeral** (host-local
-  slot lanes judged by host health - state / restarts / conformance / memory +
-  an OOM badge), **Groups**, **Health** (per-org auth + retention cards), and
-  **Settings** (the capacity policy).
-- `o` cycles the org filter; `r` refresh; `/` incremental **filter** (Persistent);
+- **Tabs** (`tab`/`shift+tab`): **Health** (per-org auth + retention cards + a
+  host panel), **Persistent** (cross-org runner table with ORG/MACHINE columns +
+  a color-coded detail line), **Ephemeral** (host-local slot lanes judged by host
+  health - state / restarts / conformance / memory + an OOM badge), **Groups**,
+  **Drift** (host-vs-GitHub audit with fix/reap), and **Settings** (the capacity
+  policy + a Lifecycle operations panel). `i` opens a scrollable **Information**
+  panel for the selected runner / slot / group / org / drift row.
+- `o` filters the visible orgs (multi-select); `r` refresh; `/` incremental
+  **filter** (Persistent / Ephemeral / Groups / Health / Drift);
   `n` opens the **create wizard** (persistent runners *or* ephemeral slots) with a
   live progress bar; `d` destroys the selection (a persistent runner - host
   teardown if local, else deregister - or an ephemeral slot by id) behind a

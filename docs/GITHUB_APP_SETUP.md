@@ -36,9 +36,13 @@ user-facing section of the form (OAuth, device flow, setup URL, webhook) is left
 
 ## 2. Permissions
 
-`srm` manages runners at the **organization** level, so the only permissions it
-needs live under **Organization permissions**. Leave **Repository permissions**
-and **Account permissions** at their defaults.
+`srm` manages runners at the **organization** level, so the permissions it
+*requires* all live under **Organization permissions**; leave **Account
+permissions** at their defaults. A small set of **Repository permissions** is
+**optional**: they are not needed for runner management, but they light up the
+repo-aware panels in the TUI (the runner-group repo picker, a group's assigned
+repos, and the per-runner "current job" lookup). See *Repository permissions
+(optional)* below.
 
 Under **Permissions → Organization permissions**:
 
@@ -52,12 +56,32 @@ line in `srm doctor`)
   retention API. Without it, runner management works normally and retention
   simply shows “unavailable”.
 
-**Do not** select any **Repository permissions** - `srm` makes no
-repository-level calls. In particular the repository **Artifact metadata**
-permission is *not* what drives retention (that is org **Administration**,
-above), so leave it unselected. **Metadata: Read** shows as **Mandatory** on the
-form; GitHub grants it automatically and it cannot be removed. No account
-permissions or webhook event subscriptions are required.
+Under **Permissions → Repository permissions** (optional - only for the TUI's
+repo-aware panels):
+
+- **Actions: Read** - lets the TUI resolve which job a busy runner is currently
+  executing. The lookup scans the org's accessible repos for in-progress
+  workflow runs and matches the runner by name. Without it the Information panel
+  shows "running a job, not found in repos this App can read".
+- **Metadata: Read** - lets the runner-group repo picker and a group's "assigned
+  repos" view enumerate the org's **private** repositories. (Metadata is already
+  mandatory at the org level; granting it as a *repository* permission, with the
+  installation scoped to repositories, is what surfaces private repos. Public
+  repos are always visible regardless.)
+
+These take effect only when the installation is actually granted access to the
+repositories: choose **"All repositories"** at install time, or select the ones
+you care about (see step 4). An org-perms-only installation still runs the TUI
+fine - the repo picker just shows public repos only, group assigned-repos still
+lists from the runner-group API, and current-job lookups for private repos report
+"not found".
+
+Beyond those two optional permissions, **srm needs no other Repository
+permissions**. In particular the repository **Artifact metadata** permission is
+*not* what drives retention (that is org **Administration**, above), so leave it
+unselected. **Metadata: Read** shows as **Mandatory** on the form; GitHub grants
+it automatically and it cannot be removed. No account permissions or webhook
+event subscriptions are required.
 
 ## 3. Generate a private key
 
@@ -74,9 +98,13 @@ sudo install -m 0600 ~/Downloads/acme-srm.*.private-key.pem /etc/srm/acme.pem
 
 ## 4. Install the App on your org
 
-App settings → **Install App → choose the org → Install.** Granting “All
-repositories” is fine - runner management is org-level, so repository selection
-does not affect runner operations, but an installation must exist.
+App settings → **Install App → choose the org → Install.** An installation must
+exist. Repository selection does **not** affect runner operations (those are
+org-level), so an org-perms-only install manages runners normally. It **does**
+affect the optional TUI repo-aware panels (step 2): grant **“All repositories”**
+(or select specific ones) so the repo picker, group assigned-repos view, and
+current-job lookup can see your repositories. With no repository access those
+panels simply fall back to public repos only.
 
 ## 5. Collect the three values
 

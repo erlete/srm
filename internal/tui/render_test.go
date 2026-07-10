@@ -32,17 +32,34 @@ func TestRenderPaths(t *testing.T) {
 
 	step(tea.WindowSizeMsg{Width: 120, Height: 40})
 
-	rows := []service.RunnerWithOrg{
-		{Org: "acme", Local: true, Runner: core.Runner{ID: 1, Name: "r-1", OS: "Linux", Status: "online", Labels: []core.Label{{Name: "self-hosted"}}}},
-		{Org: "globex", Local: false, Runner: core.Runner{ID: 2, Name: "r-2", OS: "Linux", Status: "offline", Busy: false}},
+	snap := service.FleetSnapshot{
+		HostTierAvailable: true,
+		Runners: []service.FusedRunner{
+			{
+				RunnerWithOrg: service.RunnerWithOrg{Org: "acme", Local: true, Runner: core.Runner{ID: 1, Name: "r-1", OS: "Linux", Status: "online", GroupID: 4, Labels: []core.Label{{Name: "self-hosted"}}}},
+				AgentVersion:  "2.334.0", Published: "2.335.1", Behind: true,
+				DriftClass: service.ClassStaleDropIn, DriftDetail: "drop-in differs", HostKnown: true,
+				MemCur: 1 << 30, MemPeak: 2 << 30, MemMax: 4 << 30,
+			},
+			{
+				RunnerWithOrg: service.RunnerWithOrg{Org: "globex", Local: false, Runner: core.Runner{ID: 2, Name: "r-2", OS: "Linux", Status: "offline"}},
+				AgentVersion:  "2.335.1", Published: "2.335.1",
+				DriftClass: service.ClassDropInNewer, HostKnown: true,
+				MemCur: -1, MemPeak: -1, MemMax: -1,
+			},
+		},
+		Slots: []service.FusedSlot{
+			{EphemeralSlot: service.EphemeralSlot{Org: "acme", Slot: "1", Active: true, Restarts: 0, UnitOK: true, MemCur: 1 << 29, MemPeak: 1 << 30, MemMax: 4 << 30}, DriftClass: service.ClassEphemeralSlot},
+			{EphemeralSlot: service.EphemeralSlot{Org: "acme", Slot: "2", Active: false, Restarts: 7, UnitOK: false, MemPeak: -1, MemMax: -1, OOMKills: 3}, DriftClass: service.ClassEphemeralStuck},
+		},
+		Host: service.HostHealth{Loaded: true, SliceCurrent: 12 << 30, SliceMax: 16 << 30},
 	}
-	step(runnersMsg{rows: rows})
-	step(ephemeralMsg{rows: []service.EphemeralSlot{
-		{Org: "acme", Slot: "1", Active: true, Restarts: 0, UnitOK: true, MemPeak: 1 << 30, MemMax: 4 << 30},
-		{Org: "acme", Slot: "2", Active: false, Restarts: 7, UnitOK: false, MemPeak: -1, MemMax: -1},
-	}})
+	step(fleetMsg{snap: snap})
 	step(groupsMsg{rows: []service.GroupWithOrg{{Org: "acme", Group: core.Group{ID: 1, Name: "Default", Visibility: "all", Default: true}}}})
-	step(healthMsg{reports: []healthReport{{Org: "acme", Runners: 2, Online: 1, RetentionDays: 90, RetentionMax: 400}}})
+	step(healthMsg{
+		reports: []healthReport{{Org: "acme", Runners: 2, Online: 1, RetentionDays: 90, RetentionMax: 400, AgentCurrent: "2.335.1", AgentBehind: 1, AgentOK: true}},
+		host:    healthHost{CapacityMode: "auto", Tools: []toolProbe{{Name: "git", Found: true}, {Name: "docker", Found: false}}},
+	})
 	step(settingsMsg{snap: settingsSnapshot{
 		Mode:      config.ResourceModeAuto,
 		Effective: config.AutoResourceLimits(),
@@ -51,12 +68,105 @@ func TestRenderPaths(t *testing.T) {
 	}})
 
 	// Each tab.
-	for _, tb := range []tab{tabPersistent, tabEphemeral, tabGroups, tabHealth, tabSettings} {
+	for _, tb := range []tab{tabHealth, tabPersistent, tabEphemeral, tabGroups, tabDrift, tabSettings} {
 		m.tab = tb
 		if v := m.View(); v.Content == "" {
 			t.Fatalf("nil view on tab %d", tb)
 		}
 	}
+
+	// Information panel for a runner / slot / group (the i screen).
+	openInfoOn := func(tb tab, what string) {
+		m.tab = tb
+		mm, _ := m.openInfo()
+		m = mm.(Model)
+		if v := m.View(); v.Content == "" {
+			t.Fatalf("nil view with %s info open", what)
+		}
+		m.infoOpen = false
+	}
+	openInfoOn(tabPersistent, "runner")
+	openInfoOn(tabEphemeral, "slot")
+	openInfoOn(tabGroups, "group")
+
+	// Multi-select chip + newer-template banner (dropin-newer row above).
+	m.tab = tabPersistent
+	m.runners.selectAllVisible()
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with selection + banner")
+	}
+	m.runners.clearSelection()
+
+	// Operation result panel (running, then done).
+	m.op = opState{open: true, running: true, title: "Upgrade agent", total: 3, done: 1, msg: "upgrading r-1"}
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with op panel running")
+	}
+	m.op.running = false
+	m.op.items = []opItem{
+		{Label: "acme/r-1", Outcome: outcomeOK, Detail: "2.334.0 -> 2.335.1"},
+		{Label: "acme/r-2", Outcome: outcomeSkip, Detail: "busy"},
+		{Label: "globex/r-3", Outcome: outcomeRollback, Detail: "self-test failed"},
+	}
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with op panel results")
+	}
+	m.op = opState{}
+
+	// Typed-confirm modal.
+	m.typedOpen = true
+	m.typed = newTypedConfirm(m.theme, "Upgrade ALL", "Type UPGRADE ALL to proceed.", "UPGRADE ALL", "token")
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with typed-confirm open")
+	}
+	m.typedOpen = false
+
+	// Dry-run preview modal.
+	m.previewOpen = true
+	m.preview = newPreview(m.theme, "Fix drift (preview)", "scope: all orgs", []string{"⚠ acme r-1 would refresh"})
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with preview open")
+	}
+	m.previewOpen = false
+
+	// Group create/edit form.
+	m.groupForm = newGroupForm(mgr.OrgNames())
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with group form open")
+	}
+	m.groupForm = nil
+
+	// Runner edit (group move) form.
+	m.runnerEdit = newRunnerEditForm(service.FusedRunner{
+		RunnerWithOrg: service.RunnerWithOrg{Org: "acme", Runner: core.Runner{ID: 1, Name: "r-1"}}, GroupName: "ci",
+	}, []string{"ci", "build", "temporal"})
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with runner edit form open")
+	}
+	m.runnerEdit = nil
+
+	// Org filter modal.
+	m.orgPick = newOrgFilterModal(m.theme, mgr.OrgNames(), nil)
+	m.orgPickOpen = true
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with org filter open")
+	}
+	m.orgPickOpen = false
+
+	// Repo-access picker (loading, then loaded).
+	m.pickerOpen = true
+	m.picker = newRepoPicker(m.theme, "acme", 5, "ci")
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with picker loading")
+	}
+	m.picker.setData(
+		[]core.Repo{{ID: 1, FullName: "acme/api"}, {ID: 2, FullName: "acme/web"}},
+		[]core.Repo{{ID: 1, FullName: "acme/api"}},
+	)
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with picker loaded")
+	}
+	m.pickerOpen = false
 
 	// Confirm modal.
 	m.tab = tabPersistent
@@ -89,6 +199,14 @@ func TestRenderPaths(t *testing.T) {
 		t.Fatal("nil view with settings form open")
 	}
 	m.setForm = nil
+
+	// Retention edit form.
+	m.tab = tabHealth
+	m.retForm = newRetentionForm("acme", 90, 400)
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with retention form open")
+	}
+	m.retForm = nil
 
 	// Active filter on the persistent view.
 	m.tab = tabPersistent

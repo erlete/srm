@@ -9,6 +9,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.4
 	charm.land/log/v2 v2.0.0
 	filippo.io/age v1.3.1
+	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/google/go-github/v88 v88.0.0
 	github.com/jferrl/go-githubauth v1.6.0
 	github.com/knadh/koanf/parsers/yaml v1.1.0
@@ -28,7 +29,6 @@ require (
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/harmonica v0.2.0 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260525132238-948f4557a654 // indirect
-	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/exp/strings v0.0.0-20240722160745-212f7b056ed0 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect

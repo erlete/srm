@@ -143,3 +143,5 @@ srm.local.yaml
 config.yaml
 # GitHub App private keys
 *.pem
+# Brainstorm visual-companion artifacts (mockups, session state)
+.superpowers/

@@ -28,6 +28,13 @@ type Manager struct {
 
 	mu      sync.Mutex
 	clients map[string]ghub.Client
+
+	// dryMu serializes withDryRun's save/restore of the shared cfg.DryRun flag so
+	// two overlapping preview/apply goroutines (prune, uninstall) can't interleave
+	// and leave dry-run stuck on. Kept separate from mu to avoid a deadlock when the
+	// wrapped op acquires mu via client(). Reconcile threads dry-run explicitly
+	// instead and never touches this.
+	dryMu sync.Mutex
 }
 
 // New creates a Manager over the given config and secret store. cfgPath is the
@@ -38,6 +45,25 @@ func New(cfg *config.Config, sec secrets.Store, cfgPath string) *Manager {
 
 // Config exposes the underlying configuration (read-only intent).
 func (m *Manager) Config() *config.Config { return m.cfg }
+
+// DryRun reports whether the Manager is globally in dry-run mode (the --dry-run
+// flag). Callers that thread the flag explicitly (e.g. Reconcile) read it here.
+func (m *Manager) DryRun() bool { return m.cfg.DryRun }
+
+// withDryRun temporarily overrides the global dry-run flag and returns a restore
+// func (use with defer). It holds dryMu for the whole scope so concurrent callers
+// serialize: the save always captures the true original value and the flag can
+// never be left stuck on by an interleaving. Do NOT call a helper that also takes
+// dryMu from within the wrapped op (there are none today).
+func (m *Manager) withDryRun(dry bool) func() {
+	m.dryMu.Lock()
+	prev := m.cfg.DryRun
+	m.cfg.DryRun = dry
+	return func() {
+		m.cfg.DryRun = prev
+		m.dryMu.Unlock()
+	}
+}
 
 // ConfigPath returns the file the config was loaded from (where SaveConfig writes).
 func (m *Manager) ConfigPath() string { return m.cfgPath }

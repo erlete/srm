@@ -52,7 +52,7 @@ func TestUsernsReadiness(t *testing.T) {
 		{"0", "", false},
 		{"1", "0", true},
 		{"1", "15000", true},
-		{"", "15000", true},   // no clone knob, maxns positive
+		{"", "15000", true}, // no clone knob, maxns positive
 		{"", "0", false},
 		{"", "", false},
 	}

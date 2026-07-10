@@ -73,7 +73,7 @@ func TestParseUnitName(t *testing.T) {
 		{"actions.runner.A.y.service", "A", "y", true},      // shorter org still matches
 		{"actions.runner.Unknown.z.service", "", "", false}, // not a configured org
 		{"some-other-unit.service", "", "", false},          // not a runner unit
-		{"actions.runner.Acme.service", "", "", false},  // no name segment
+		{"actions.runner.Acme.service", "", "", false},      // no name segment
 	}
 	for _, c := range cases {
 		org, name, ok := parseUnitName(c.svc, orgs)
@@ -97,11 +97,11 @@ func TestParseEphemeralUnitName(t *testing.T) {
 	}{
 		{"actions.ephemeral.Acme.3.service", "Acme", "3", true},
 		{"actions.ephemeral.Globex.1.service", "Globex", "1", true},
-		{"actions.ephemeral.AB.x.service", "AB", "x", true},           // longest-prefix wins over "A"
+		{"actions.ephemeral.AB.x.service", "AB", "x", true},       // longest-prefix wins over "A"
 		{"actions.runner.Acme.temporal-1.service", "", "", false}, // PERSISTENT unit - not ephemeral
-		{"actions.ephemeral.Unknown.1.service", "", "", false},        // not a configured org
+		{"actions.ephemeral.Unknown.1.service", "", "", false},    // not a configured org
 		{"actions.ephemeral.Acme.service", "", "", false},         // no slot segment
-		{"some-other-unit.service", "", "", false},                    // unrelated
+		{"some-other-unit.service", "", "", false},                // unrelated
 	}
 	for _, c := range cases {
 		org, slot, ok := parseEphemeralUnitName(c.svc, orgs)

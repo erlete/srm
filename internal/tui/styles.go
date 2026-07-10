@@ -3,7 +3,31 @@ package tui
 import (
 	"charm.land/bubbles/v2/table"
 	lipgloss "charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
+
+// clip truncates a (possibly ANSI-styled) string to w display cells with an
+// ellipsis, ANSI-aware so it never cuts a color escape mid-sequence. Used to keep
+// long lines inside modal boxes instead of blowing the border out past the screen.
+func clip(s string, w int) string {
+	if w < 1 {
+		return ""
+	}
+	return ansi.Truncate(s, w, "…")
+}
+
+// clipPlain truncates a PLAIN (unstyled) string to w runes with an ellipsis - for
+// values fed into fmt width verbs, where ANSI codes would break the column math.
+func clipPlain(s string, w int) string {
+	r := []rune(s)
+	if w < 1 || len(r) <= w {
+		return s
+	}
+	if w == 1 {
+		return "…"
+	}
+	return string(r[:w-1]) + "…"
+}
 
 // Palette - 256-color indices chosen to read well on both dark and light
 // terminals. A single place to retune the whole UI. (lipgloss.Color returns an
@@ -45,6 +69,7 @@ type Theme struct {
 	Online  lipgloss.Style
 	Offline lipgloss.Style
 	Busy    lipgloss.Style
+	Newer   lipgloss.Style // on-disk template newer than this binary (purple, not error-red)
 	OnHost  lipgloss.Style
 	Remote  lipgloss.Style
 	Faint   lipgloss.Style
@@ -100,6 +125,7 @@ func NewTheme() Theme {
 		Online:  lipgloss.NewStyle().Foreground(colOK),
 		Offline: lipgloss.NewStyle().Foreground(colErr),
 		Busy:    lipgloss.NewStyle().Foreground(colWarn),
+		Newer:   lipgloss.NewStyle().Foreground(colAccent).Bold(true),
 		OnHost:  lipgloss.NewStyle().Foreground(colOK).Bold(true),
 		Remote:  lipgloss.NewStyle().Foreground(colMuted),
 		Faint:   lipgloss.NewStyle().Foreground(colDim),

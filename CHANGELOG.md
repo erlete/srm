@@ -4,6 +4,56 @@ All notable changes to `srm` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-07-10
+
+Major TUI release: the terminal UI becomes a full fleet **cockpit and control
+plane**, and the whole run is grounded in a multi-agent release audit.
+
+### Added
+- **Six-tab cockpit** (Health / Persistent / Ephemeral / Groups / Drift /
+  Settings) fed by a two-tier fused snapshot (fast GitHub + manifest tier,
+  slower host-reconcile tier) that degrades gracefully off-host.
+- **Information panel** (`i`) - a full-screen, scrollable read-out for the
+  selected runner, ephemeral slot, group, **org (Health)**, or **drift row**,
+  with a copy-ready `runs-on` snippet and, for a busy runner, an async
+  **current-job** lookup (scans the org's accessible repos, most-recent-push
+  first).
+- **Drift tab** - every non-healthy runner/slot the reconcile tier surfaces,
+  with an incremental `/` filter, `enter` to jump to the row's home tab, and
+  `f` fix / `g` reap ops (dry-run preview first).
+- **Control plane** - `u` upgrade, `b` rollback, `R` refresh-units, `p` prune
+  dep-cache, `P` provision host, `c` recreate, each behind the appropriate
+  safety rung (dry-run preview and/or confirm / typed-confirm). Multi-select
+  (`space` / `A`) scopes destroy / recreate / **upgrade / rollback / refresh**
+  to a chosen subset; a host-wide upgrade-all is typed-hostname-confirmed.
+- **Runner groups** - create / edit / delete, an autocomplete repo-access
+  picker for "selected" visibility, and `e` to move a persistent runner into an
+  existing group (a Select of the org's groups).
+- **Org filter** (`o`) - a centered multi-select that hides unselected orgs
+  across every view.
+- **Mouse support** - the wheel scrolls the active table / Information panel /
+  picker; a left click on the tab bar switches tabs.
+- **Health host panel + Lifecycle panel** - host capacity mode, aggregate
+  slice memory, disks, dep-caches, and toolchain doctor live on Health;
+  Settings hosts the Lifecycle operations (backup / uninstall) panel.
+- Docs: `GITHUB_APP_SETUP.md` documents the optional Repository permissions
+  (Actions: Read + Metadata: Read) that light up the repo picker, group
+  assigned-repos, and current-job lookup.
+
+### Changed
+- The reconcile dry-run decision is now threaded explicitly through `Reconcile`
+  instead of mutating the shared config flag; `withDryRun` (prune / uninstall
+  previews) serializes on a dedicated mutex.
+
+### Fixed
+- **Dry-run could get stuck on**: overlapping Drift fix/reap plan goroutines
+  raced on the shared `cfg.DryRun` flag; a bad interleaving left it on, after
+  which real destroy/upgrade/create ops silently no-op'd while reporting
+  success. The flag is no longer shared-mutated.
+- Recreate/destroy op progress reached only `(n-1)/n`; it now reaches 100%.
+- The repo picker filter swallowed the `space` key instead of toggling a repo;
+  the runner table `space`-select jumped instead of selecting.
+
 ## [2.0.1] - 2026-06-23
 
 ### Fixed

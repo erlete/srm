@@ -39,11 +39,11 @@ func TestEphemeralSlotDir(t *testing.T) {
 func TestSCAccount(t *testing.T) {
 	cases := map[string]string{
 		`NT AUTHORITY\NETWORK SERVICE`: `NT AUTHORITY\NetworkService`,
-		`network service`:             `NT AUTHORITY\NetworkService`,
-		`LOCAL SERVICE`:               `NT AUTHORITY\LocalService`,
-		`SYSTEM`:                      `LocalSystem`,
-		`LocalSystem`:                 `LocalSystem`,
-		`acme\ci-runner`:              `acme\ci-runner`,
+		`network service`:              `NT AUTHORITY\NetworkService`,
+		`LOCAL SERVICE`:                `NT AUTHORITY\LocalService`,
+		`SYSTEM`:                       `LocalSystem`,
+		`LocalSystem`:                  `LocalSystem`,
+		`acme\ci-runner`:               `acme\ci-runner`,
 	}
 	for in, want := range cases {
 		if got := scAccount(in); got != want {

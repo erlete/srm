@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 
 	"github.com/erlete/srm/internal/runner"
@@ -11,11 +12,29 @@ import (
 
 // UpgradeOpts parameterizes an agent-version upgrade pass over THIS host's runners.
 type UpgradeOpts struct {
-	OrgFilter string // restrict to one org ("" = every configured org)
-	ToVersion string // explicit target ("" = use RunnerVersionPin, else GitHub-current)
-	DryRun    bool   // report what would change; touch nothing
-	Force     bool   // re-install at the same version, and allow a downgrade
-	Rollback  bool   // restore each runner to its recorded previousVersion (a deliberate downgrade)
+	OrgFilter string          // restrict to one org ("" = every configured org)
+	Only      map[string]bool // restrict to these persistent runners (keys via RunnerRef); empty = all in scope
+	ToVersion string          // explicit target ("" = use RunnerVersionPin, else GitHub-current)
+	DryRun    bool            // report what would change; touch nothing
+	Force     bool            // re-install at the same version, and allow a downgrade
+	Rollback  bool            // restore each runner to its recorded previousVersion (a deliberate downgrade)
+}
+
+// RunnerRef is the key used by UpgradeOpts.Only and RefreshLocalUnits' selection
+// filter (org + name). Kept here so the TUI and the service agree on the format.
+func RunnerRef(org, name string) string { return org + "\x00" + name }
+
+// OnlyRunners builds a selection filter from a runner set (nil when empty, meaning
+// "no restriction"). Used to scope upgrade/rollback/refresh to a multi-selection.
+func OnlyRunners(rs []FusedRunner) map[string]bool {
+	if len(rs) == 0 {
+		return nil
+	}
+	only := make(map[string]bool, len(rs))
+	for _, r := range rs {
+		only[RunnerRef(r.Org, r.Runner.Name)] = true
+	}
+	return only
 }
 
 // UpgradeResult is the outcome for one runner or ephemeral slot.
@@ -48,6 +67,15 @@ type UpgradeResult struct {
 // Must run as root on the host. Returns one result per local runner/slot plus a
 // per-key error map (GitHub list failures, a corrupt manifest under "_state").
 func (m *Manager) UpgradeLocalRunners(ctx context.Context, opts UpgradeOpts) ([]UpgradeResult, map[string]error) {
+	return m.UpgradeLocalRunnersStream(ctx, opts, nil)
+}
+
+// UpgradeLocalRunnersStream is UpgradeLocalRunners with live per-runner streaming:
+// each result is sent on progress (when non-nil) the moment that runner is fully
+// upgraded or rolled back, so the TUI op panel reels them off one at a time rather
+// than only at the end (decision #6). The serial, continue-on-failure contract is
+// unchanged - the channel observes the same results the slice returns.
+func (m *Manager) UpgradeLocalRunnersStream(ctx context.Context, opts UpgradeOpts, progress chan<- UpgradeResult) ([]UpgradeResult, map[string]error) {
 	errs := map[string]error{}
 
 	if opts.OrgFilter != "" {
@@ -85,8 +113,8 @@ func (m *Manager) UpgradeLocalRunners(ctx context.Context, opts UpgradeOpts) ([]
 	}
 
 	var results []UpgradeResult
-	results = append(results, m.upgradePersistent(ctx, opts, st, resolve, errs)...)
-	results = append(results, m.upgradeEphemeral(ctx, opts, errs)...)
+	results = append(results, m.upgradePersistent(ctx, opts, st, resolve, errs, progress)...)
+	results = append(results, m.upgradeEphemeral(ctx, opts, errs, progress)...)
 
 	if !opts.DryRun {
 		_ = st.Save(StatePath) // belt-and-suspenders; the per-runner saves already persisted
@@ -96,11 +124,9 @@ func (m *Manager) UpgradeLocalRunners(ctx context.Context, opts UpgradeOpts) ([]
 
 // upgradePersistent walks the local persistent runners (live GitHub list filtered
 // to this host, ephemeral JIT names excluded) and upgrades each.
-func (m *Manager) upgradePersistent(ctx context.Context, opts UpgradeOpts, st *StateManifest, resolve func(string) (runner.Download, error), errs map[string]error) []UpgradeResult {
+func (m *Manager) upgradePersistent(ctx context.Context, opts UpgradeOpts, st *StateManifest, resolve func(string) (runner.Download, error), errs map[string]error, progress chan<- UpgradeResult) []UpgradeResult {
 	all, listErrs := m.ListAllRunners(ctx)
-	for k, v := range listErrs {
-		errs[k] = v
-	}
+	maps.Copy(errs, listErrs)
 	var out []UpgradeResult
 	for _, row := range all {
 		if !row.Local || runner.IsEphemeralRunnerName(row.Runner.Name) {
@@ -109,7 +135,14 @@ func (m *Manager) upgradePersistent(ctx context.Context, opts UpgradeOpts, st *S
 		if opts.OrgFilter != "" && row.Org != opts.OrgFilter {
 			continue
 		}
-		out = append(out, m.upgradeOnePersistent(ctx, opts, st, resolve, row))
+		if len(opts.Only) > 0 && !opts.Only[RunnerRef(row.Org, row.Runner.Name)] {
+			continue // a bounded selection is active and this runner is not in it
+		}
+		res := m.upgradeOnePersistent(ctx, opts, st, resolve, row)
+		out = append(out, res)
+		if progress != nil {
+			progress <- res
+		}
 		if !opts.DryRun {
 			_ = st.Save(StatePath)
 		}
@@ -205,7 +238,12 @@ func (m *Manager) upgradeOnePersistent(ctx context.Context, opts UpgradeOpts, st
 // drain/interlock lands, the supported way to move an ephemeral lane's agent is to
 // recreate it (its next cycle re-extracts the current agent anyway). Enumerated rather
 // than silently ignored so the operator sees they were considered.
-func (m *Manager) upgradeEphemeral(ctx context.Context, opts UpgradeOpts, errs map[string]error) []UpgradeResult {
+func (m *Manager) upgradeEphemeral(ctx context.Context, opts UpgradeOpts, errs map[string]error, progress chan<- UpgradeResult) []UpgradeResult {
+	// A bounded selection targets specific persistent runners; never sweep the
+	// ephemeral lanes in that case.
+	if len(opts.Only) > 0 {
+		return nil
+	}
 	host := m.orchestratorFor("")
 	units, err := host.ListEphemeralUnits(ctx)
 	if err != nil {
@@ -221,10 +259,14 @@ func (m *Manager) upgradeEphemeral(ctx context.Context, opts UpgradeOpts, errs m
 		if !ok || (opts.OrgFilter != "" && org != opts.OrgFilter) {
 			continue
 		}
-		out = append(out, UpgradeResult{
+		res := UpgradeResult{
 			Kind: KindEphemeral, Org: org, Name: slot,
 			Skipped: "ephemeral agent upgrade not supported yet - recreate the lane (`srm runners destroy --ephemeral --slot " + slot + "` then `srm runners create --ephemeral`) to refresh its agent",
-		})
+		}
+		out = append(out, res)
+		if progress != nil {
+			progress <- res
+		}
 	}
 	return out
 }

@@ -340,10 +340,10 @@ func TestHardeningConfig(t *testing.T) {
 // per-org service username and must be valid lowercase Linux user names.
 func TestSlug(t *testing.T) {
 	for in, want := range map[string]string{
-		"Acme":        "acme",
-		"Globex": "globex",
-		"Acme_Co":         "acme-co",
-		"-weird.Name-":    "weird-name",
+		"Acme":         "acme",
+		"Globex":       "globex",
+		"Acme_Co":      "acme-co",
+		"-weird.Name-": "weird-name",
 	} {
 		if got := slug(in); got != want {
 			t.Errorf("slug(%q) = %q, want %q", in, got, want)

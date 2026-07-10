@@ -40,7 +40,7 @@ func newReconcileCmd() *cobra.Command {
 					return fmt.Errorf("org %q not configured", flagOrg)
 				}
 			}
-			rep, err := mgr.Reconcile(context.Background(), fix, reapEphemeral, flagOrg)
+			rep, err := mgr.Reconcile(context.Background(), fix, reapEphemeral, flagOrg, mgr.DryRun())
 			if err != nil {
 				return err
 			}

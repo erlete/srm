@@ -48,13 +48,13 @@ func TestPSQuote(t *testing.T) {
 func TestICaclsGrantee(t *testing.T) {
 	cases := map[string]string{
 		`NT AUTHORITY\NETWORK SERVICE`: `*S-1-5-20`,
-		`network service`:             `*S-1-5-20`,
-		`NT AUTHORITY\LOCAL SERVICE`:  `*S-1-5-19`,
-		`Local Service`:               `*S-1-5-19`,
-		`SYSTEM`:                      `*S-1-5-18`,
-		`LocalSystem`:                 `*S-1-5-18`,
-		`acme\\ci-runner`:             `acme\\ci-runner`, // real account -> verbatim
-		`srm`:                         `srm`,             // not a built-in -> verbatim
+		`network service`:              `*S-1-5-20`,
+		`NT AUTHORITY\LOCAL SERVICE`:   `*S-1-5-19`,
+		`Local Service`:                `*S-1-5-19`,
+		`SYSTEM`:                       `*S-1-5-18`,
+		`LocalSystem`:                  `*S-1-5-18`,
+		`acme\\ci-runner`:              `acme\\ci-runner`, // real account -> verbatim
+		`srm`:                          `srm`,             // not a built-in -> verbatim
 	}
 	for in, want := range cases {
 		if got := icaclsGrantee(in); got != want {
