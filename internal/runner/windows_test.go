@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -67,6 +68,9 @@ func TestICaclsGrantee(t *testing.T) {
 // including a read-only file (which Windows would otherwise refuse to delete), and
 // is a no-op on an already-absent directory.
 func TestRemoveRunnerTree(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only tree-removal semantics (read-only attribute handling)")
+	}
 	root := t.TempDir()
 	dir := filepath.Join(root, "DLT-Code", "ci-1")
 	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
@@ -94,6 +98,9 @@ func TestRemoveRunnerTree(t *testing.T) {
 // TestWindowsRunnerDir confirms the org-namespaced install path matches the layout
 // the rest of the code (RunnerIsLocal, reconcile) expects.
 func TestWindowsRunnerDir(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only path separators (filepath.Join)")
+	}
 	w := &windows{installRoot: `C:\actions-runners`}
 	got := w.runnerDir("DLT-Code", "ci-1")
 	want := `C:\actions-runners\DLT-Code\ci-1`

@@ -3,6 +3,7 @@ package runner
 import (
 	"encoding/json"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,9 @@ func TestEphemeralSvcName(t *testing.T) {
 // TestEphemeralSlotDir confirms the slot tree layout matches the Linux mirror
 // ({installRoot}/{org}/.ephemeral/{slot}) the reconcile and teardown paths assume.
 func TestEphemeralSlotDir(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only path separators (filepath.Join)")
+	}
 	w := &windows{installRoot: `C:\actions-runners`}
 	got := w.ephemeralSlotDir("DLT-Code", "2")
 	want := `C:\actions-runners\DLT-Code\.ephemeral\2`
