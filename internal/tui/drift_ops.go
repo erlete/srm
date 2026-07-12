@@ -15,12 +15,13 @@ import (
 // typedToken is set, the preview's Apply opens a typed-confirm gate (the strongest
 // rung) requiring that exact token before the op runs - used for uninstall.
 type previewMsg struct {
-	title      string
-	note       string
-	lines      []string
-	spec       opSpec
-	typedToken string
-	err        error
+	title       string
+	note        string
+	lines       []string
+	spec        opSpec
+	typedToken  string // first typed-confirm token (e.g. the hostname); "" = no typed gate
+	typedToken2 string // chained second token (e.g. "PURGE"); "" = single gate
+	err         error
 }
 
 // planFixCmd runs a dry-run reconcile-fix pass and builds the preview (the plan)

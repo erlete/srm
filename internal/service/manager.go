@@ -43,8 +43,9 @@ func New(cfg *config.Config, sec secrets.Store, cfgPath string) *Manager {
 	return &Manager{cfg: cfg, cfgPath: cfgPath, sec: sec, clients: make(map[string]ghub.Client)}
 }
 
-// Config exposes the underlying configuration (read-only intent).
-func (m *Manager) Config() *config.Config { return m.cfg }
+// Config exposes the underlying configuration (read-only intent). Snapshotted under
+// the mutex so a concurrent Reload swap can't be observed torn.
+func (m *Manager) Config() *config.Config { return m.currentConfig() }
 
 // DryRun reports whether the Manager is globally in dry-run mode (the --dry-run
 // flag). Callers that thread the flag explicitly (e.g. Reconcile) read it here.
@@ -81,15 +82,74 @@ func (m *Manager) SaveConfig() error {
 			return err
 		}
 	}
-	data, err := yaml.Marshal(m.cfg)
+	data, err := yaml.Marshal(m.currentConfig())
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(m.cfgPath, data, 0o600)
 }
 
-// OrgNames lists configured orgs.
-func (m *Manager) OrgNames() []string { return m.cfg.OrgNames() }
+// currentConfig returns the live config pointer under the mutex. The config is
+// SWAPPED wholesale by Reload/UpsertOrg (never mutated in place, other than the
+// dryMu-guarded DryRun flag), so a caller may use the returned pointer without further
+// locking - it observes a consistent config even if a concurrent reload swaps in a new
+// one. Readers that iterate cfg.Orgs from a command goroutine (which can run
+// concurrently with a wizard's Reload) MUST snapshot through this.
+func (m *Manager) currentConfig() *config.Config {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg
+}
+
+// Reload re-reads the config from its file, swapping in the fresh config and
+// dropping every cached GitHub client (credentials may have changed - a new org, or
+// a restored config dir). The *Manager pointer is preserved, so callers holding it
+// (the TUI) see the new config without re-wiring. The secrets store is unchanged. A
+// no-op-safe error is returned when no config path is set or the file can't be read.
+// The swap is a whole-pointer replacement under m.mu (see currentConfig).
+func (m *Manager) Reload() error {
+	if m.cfgPath == "" {
+		return fmt.Errorf("no config path is set - cannot reload")
+	}
+	cfg, err := config.Load(m.cfgPath)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.cfg = cfg
+	m.clients = make(map[string]ghub.Client)
+	m.mu.Unlock()
+	return nil
+}
+
+// UpsertOrg adds or replaces an org in the in-memory config (matched by name).
+// Persist it with SaveConfig; drop stale clients with Reload. Used by the TUI onboard
+// wizard, mirroring `srm init`'s upsert. It builds a fresh config with a fresh Orgs
+// slice and swaps the whole pointer under m.mu - never an in-place append - so a
+// concurrent cfg.Orgs reader can never observe a torn slice header.
+func (m *Manager) UpsertOrg(oc config.OrgConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	next := *m.cfg // shallow copy; the Orgs slice below is fresh, so no aliasing
+	orgs := make([]config.OrgConfig, len(next.Orgs), len(next.Orgs)+1)
+	copy(orgs, next.Orgs)
+	replaced := false
+	for i := range orgs {
+		if orgs[i].Name == oc.Name {
+			orgs[i] = oc
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		orgs = append(orgs, oc)
+	}
+	next.Orgs = orgs
+	m.cfg = &next
+}
+
+// OrgNames lists configured orgs (snapshotting the config for the iteration).
+func (m *Manager) OrgNames() []string { return m.currentConfig().OrgNames() }
 
 // requireOrg validates that an explicit, configured org was supplied. Operations
 // do NOT fall back to a hidden active org - callers must name the org so a
@@ -98,7 +158,7 @@ func (m *Manager) requireOrg(org string) (string, error) {
 	if org == "" {
 		return "", fmt.Errorf("no org specified")
 	}
-	if _, ok := m.cfg.Org(org); !ok {
+	if _, ok := m.currentConfig().Org(org); !ok {
 		return "", fmt.Errorf("org %q not configured", org)
 	}
 	return org, nil
@@ -154,7 +214,7 @@ type RunnerWithOrg struct {
 func (m *Manager) ListAllRunners(ctx context.Context) ([]RunnerWithOrg, map[string]error) {
 	var out []RunnerWithOrg
 	errs := make(map[string]error)
-	for _, name := range m.cfg.OrgNames() {
+	for _, name := range m.currentConfig().OrgNames() {
 		rs, err := m.ListRunners(ctx, name)
 		if err != nil {
 			errs[name] = err
@@ -227,7 +287,7 @@ func (m *Manager) ListGroups(ctx context.Context, org string) ([]core.Group, err
 func (m *Manager) ListAllGroups(ctx context.Context) ([]GroupWithOrg, map[string]error) {
 	var out []GroupWithOrg
 	errs := make(map[string]error)
-	for _, name := range m.cfg.OrgNames() {
+	for _, name := range m.currentConfig().OrgNames() {
 		gs, err := m.ListGroups(ctx, name)
 		if err != nil {
 			errs[name] = err

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 
 	huh "charm.land/huh/v2"
@@ -15,6 +13,7 @@ import (
 
 	"github.com/erlete/srm/internal/config"
 	"github.com/erlete/srm/internal/secrets"
+	"github.com/erlete/srm/internal/setup"
 )
 
 func newInitCmd() *cobra.Command {
@@ -29,89 +28,16 @@ func newInitCmd() *cobra.Command {
 	}
 }
 
-// orgFields holds the raw string inputs the interactive org form binds to. It is
-// the single source of truth for the form shared by `srm init` and the first-run
-// wizard, so both collect identical fields with identical validation.
-type orgFields struct {
-	name        string
-	appIDStr    string
-	instIDStr   string
-	keyPath     string
-	groupIDStr  string
-	labelsStr   string
-	installRoot string
-}
-
-// defaultOrgFields seeds the form with the conventional defaults.
-func defaultOrgFields() orgFields {
-	return orgFields{
-		groupIDStr: "1",
-		// OS/arch defaults track the build (GitHub also auto-adds the read-only
-		// self-hosted/<OS>/<arch> labels on top); runtime.GOOS is "linux"/"windows".
-		labelsStr:   "self-hosted," + runtime.GOOS + ",x64",
-		installRoot: config.DefaultInstallRoot,
-	}
-}
-
-// orgForm builds the interactive org form bound to f. Defined once so `srm init`
-// and the first-run wizard present the exact same prompts and validation.
-func orgForm(f *orgFields) *huh.Form {
-	required := func(s string) error {
-		if strings.TrimSpace(s) == "" {
-			return fmt.Errorf("required")
-		}
-		return nil
-	}
-	intRequired := func(s string) error {
-		if err := required(s); err != nil {
-			return err
-		}
-		if _, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err != nil {
-			return fmt.Errorf("must be a number")
-		}
-		return nil
-	}
-	return huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().Title("Organization slug (login)").Placeholder("acme").Value(&f.name).Validate(required),
-			huh.NewInput().Title("GitHub App ID").Placeholder("123456").Value(&f.appIDStr).Validate(intRequired),
-			huh.NewInput().Title("Installation ID (for this org)").Placeholder("7654321").Value(&f.instIDStr).Validate(intRequired),
-			huh.NewInput().Title("Path to the App private key (.pem)").Placeholder(filepath.Join(filepath.Dir(systemConfigPath), "acme.pem")).Value(&f.keyPath).Validate(required),
-		),
-		huh.NewGroup(
-			huh.NewInput().Title("Default runner group ID").Value(&f.groupIDStr).Validate(intRequired),
-			huh.NewInput().Title("Default labels (comma-separated)").Value(&f.labelsStr),
-			huh.NewInput().Title("Runner install root").Value(&f.installRoot),
-		),
-	)
-}
-
-// toOrgConfig parses collected fields into an OrgConfig (numbers already validated
-// by the form).
-func (f orgFields) toOrgConfig() config.OrgConfig {
-	appID, _ := strconv.ParseInt(strings.TrimSpace(f.appIDStr), 10, 64)
-	instID, _ := strconv.ParseInt(strings.TrimSpace(f.instIDStr), 10, 64)
-	groupID, _ := strconv.ParseInt(strings.TrimSpace(f.groupIDStr), 10, 64)
-	return config.OrgConfig{
-		Name:           strings.TrimSpace(f.name),
-		AppID:          appID,
-		InstallationID: instID,
-		PrivateKeyPath: strings.TrimSpace(f.keyPath),
-		DefaultGroupID: groupID,
-		DefaultLabels:  splitCSV(f.labelsStr),
-		InstallRoot:    strings.TrimSpace(f.installRoot),
-	}
-}
-
 // collectOrg runs the interactive org form (plus the optional key-encryption
 // prompt) and returns the resulting OrgConfig. Shared by `srm init` and the
-// first-run wizard.
-func collectOrg(defaults orgFields) (config.OrgConfig, error) {
+// first-run wizard. The form itself lives in internal/setup so the TUI onboard
+// wizard collects identical fields.
+func collectOrg(defaults setup.OrgFields) (config.OrgConfig, error) {
 	f := defaults
-	if err := orgForm(&f).Run(); err != nil {
+	if err := setup.OrgForm(&f, filepath.Dir(systemConfigPath)).Run(); err != nil {
 		return config.OrgConfig{}, err
 	}
-	oc := f.toOrgConfig()
+	oc := f.ToOrgConfig()
 
 	// Optionally encrypt the private key into the age secrets store so the .pem
 	// no longer needs to live on disk. Only offered when a passphrase is set.
@@ -139,7 +65,7 @@ func runInit() error {
 		return err
 	}
 
-	oc, err := collectOrg(defaultOrgFields())
+	oc, err := collectOrg(setup.DefaultOrgFields())
 	if err != nil {
 		return err
 	}
@@ -180,7 +106,7 @@ func firstRunSetup() error {
 	}
 
 	for {
-		oc, err := collectOrg(defaultOrgFields())
+		oc, err := collectOrg(setup.DefaultOrgFields())
 		if err != nil {
 			// huh returns ErrUserAborted on ctrl+c / esc - treat as a clean cancel.
 			if errors.Is(err, huh.ErrUserAborted) {

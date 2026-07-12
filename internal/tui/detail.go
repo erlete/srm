@@ -58,6 +58,46 @@ func (t Theme) driftBadge(class string) string {
 	return t.driftStyle(class).Render(g + " " + l)
 }
 
+// sparkRunes are the eight block heights a sparkline draws with, lowest first.
+var sparkRunes = []rune("▁▂▃▄▅▆▇█")
+
+// sparkline renders samples as block runes scaled to max (e.g. the cgroup cap), so
+// the height of each column is that sample's share of the ceiling. When max is
+// unknown (<=0) it scales to the largest sample instead, so the shape still shows
+// (just not the absolute utilization). Zero-deps, one rune per sample.
+func sparkline(samples []int64, max int64) string {
+	if len(samples) == 0 {
+		return ""
+	}
+	scale := max
+	if scale <= 0 {
+		for _, s := range samples {
+			if s > scale {
+				scale = s
+			}
+		}
+	}
+	if scale <= 0 {
+		return strings.Repeat(string(sparkRunes[0]), len(samples))
+	}
+	top := int64(len(sparkRunes) - 1)
+	var b strings.Builder
+	for _, s := range samples {
+		if s < 0 {
+			s = 0
+		}
+		idx := top * s / scale
+		if idx < 0 {
+			idx = 0
+		}
+		if idx > top {
+			idx = top
+		}
+		b.WriteRune(sparkRunes[idx])
+	}
+	return b.String()
+}
+
 // bar renders a fixed-width [▓▓░░] meter colored by utilization band (green < 70,
 // amber 70-90, red > 90). frac is clamped to [0,1].
 func bar(frac float64, width int, t Theme) string {

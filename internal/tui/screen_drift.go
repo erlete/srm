@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
@@ -19,7 +20,7 @@ import (
 // Health tab. Monochrome cells (badges/colors live in the strip), same as the
 // other tables.
 type driftView struct {
-	tbl   table.Model
+	st    scrollTable
 	cols  []table.Column
 	all   []driftEntry // full set (every non-healthy row from the snapshot)
 	rows  []driftEntry // filtered (mirrors the table rows)
@@ -40,21 +41,20 @@ func newDriftView(t Theme) driftView {
 		{Title: "CLASS", Width: 11},
 		{Title: "ORG", Width: 14},
 		{Title: "NAME", Width: 22},
-		{Title: "DETAIL", Width: 36},
+		{Title: "FIX-PLAN", Width: 16},
+		{Title: "DETAIL", Width: 30}, // last col absorbs slack (fillWidth), so keep DETAIL last
 	}
-	tbl := table.New(table.WithColumns(cols), table.WithFocused(true))
-	tbl.SetStyles(t.Table)
-	return driftView{tbl: tbl, cols: cols, theme: t,
+	return driftView{st: newScrollTable(cols, t.Table), cols: cols, theme: t,
 		flt: newFilterState("type to filter by class / org / name / detail…")}
 }
 
 func (v *driftView) setSize(w, h int) {
 	v.width = w
-	v.tbl.SetWidth(w)
-	v.tbl.SetColumns(fillWidth(v.cols, w))
+	v.st.setWidth(w)
+	v.st.setColumns(fillWidth(v.cols, w))
 	v.flt.setWidth(w - 4)
 	if h > 3 {
-		v.tbl.SetHeight(h)
+		v.st.setHeight(h)
 	}
 }
 
@@ -87,7 +87,7 @@ func (v *driftView) setRows(snap service.FleetSnapshot) {
 // applyFilter recomputes the visible drift rows from the filter query, preserving
 // the cursor position.
 func (v *driftView) applyFilter() {
-	cursor := v.tbl.Cursor()
+	cursor := v.st.cursor()
 	q := v.flt.query()
 	v.rows = v.rows[:0]
 	for _, e := range v.all {
@@ -102,20 +102,48 @@ func (v *driftView) applyFilter() {
 		if r.busy {
 			detail = "(busy - skipped) " + detail
 		}
-		tr = append(tr, table.Row{g + " " + l, r.org, r.name, detail})
+		tr = append(tr, table.Row{g + " " + l, r.org, r.name, fixPlan(r.class), detail})
 	}
-	v.tbl.SetRows(tr)
+	v.st.setRows(tr)
 	if cursor >= len(tr) {
 		cursor = len(tr) - 1
 	}
 	if cursor >= 0 {
-		v.tbl.SetCursor(cursor)
+		v.st.setCursor(cursor)
 	}
 }
 
 func (v driftView) haystack(e driftEntry) string {
 	_, label := driftGlyph(e.class)
-	return strings.ToLower(strings.Join([]string{e.org, e.name, e.class, label, e.detail}, " "))
+	return strings.ToLower(strings.Join([]string{e.org, e.name, e.class, label, fixPlan(e.class), e.detail}, " "))
+}
+
+// fixPlan is the operator-facing remediation for a drift class - a pure function of
+// the class, shown in the FIX-PLAN column so the row states not just what is wrong
+// but what resolves it. The auto-repairable classes (stale-dropin, stuck, orphan-
+// unit) name the action `f` performs; the authoritative-skip classes point at the
+// binary; ephemeral-stuck names the manual recreate; report-only classes say so.
+func fixPlan(class string) string {
+	switch class {
+	case service.ClassStaleDropIn:
+		return "refresh drop-in"
+	case service.ClassStuck:
+		return "restart"
+	case service.ClassOrphanUnit:
+		return "host teardown"
+	case service.ClassEphemeralStuck:
+		return "recreate lane"
+	case service.ClassDropInNewer, service.ClassEphemeralNewer:
+		return "update srm binary"
+	case service.ClassLegacyFlat:
+		return "migrate (report)"
+	case service.ClassOrphanGitHub:
+		return "report only"
+	case service.ClassUnknown:
+		return "n/a (list failed)"
+	default:
+		return "-"
+	}
 }
 
 // startFilter focuses the filter input. stopFilter blurs it, optionally clearing.
@@ -138,19 +166,19 @@ func (v driftView) updateFilter(msg tea.Msg) (driftView, tea.Cmd) {
 
 func (v driftView) update(msg tea.Msg) (driftView, tea.Cmd) {
 	var cmd tea.Cmd
-	v.tbl, cmd = v.tbl.Update(msg)
+	cmd = v.st.update(msg)
 	return v, cmd
 }
 
 func (v driftView) selected() (driftEntry, bool) {
-	i := v.tbl.Cursor()
+	i := v.st.cursor()
 	if i < 0 || i >= len(v.rows) {
 		return driftEntry{}, false
 	}
 	return v.rows[i], true
 }
 
-func (v driftView) tableView() string { return v.tbl.View() }
+func (v driftView) tableView() string { return v.st.view() }
 
 // driftBody composes the Drift tab: banner + class strip + table (or an
 // availability note) + the ops help line. Host-wide stats live on the Health tab.
@@ -185,6 +213,7 @@ func (m Model) driftBody() string {
 		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
 	parts = append(parts, t.PanelTtl.Render("Drift")+t.Faint.Render("  "+classStrip(classes)))
+	parts = append(parts, t.Faint.Render(driftProvenance(m.snap.HostTierAt)))
 	parts = append(parts, m.drift.tableView())
 	if filtering {
 		parts = append(parts, m.drift.flt.line(t))
@@ -192,6 +221,32 @@ func (m Model) driftBody() string {
 		parts = append(parts, t.Faint.Render("repair needs root on the host"))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+// driftProvenance renders when this drift assessment was audited (a read-only
+// reconcile pass), so the operator can judge its staleness before acting. driftBody
+// only reaches here once the host tier merged, so the timestamp is set; the IsZero
+// guard is defensive.
+func driftProvenance(at time.Time) string {
+	if at.IsZero() {
+		return "read-only audit"
+	}
+	return "audited " + humanAgo(time.Since(at)) + " · read-only pass"
+}
+
+// humanAgo renders a short "Ns/Nm/Nh ago" for a non-negative elapsed duration.
+func humanAgo(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
 }
 
 // classStrip renders "label N · label N" ordered by class name.

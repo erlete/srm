@@ -14,7 +14,7 @@ import (
 // groupsView is a cross-org table of runner groups with an incremental text
 // filter and a colored detail line for the selection (mirrors the runners view).
 type groupsView struct {
-	tbl   table.Model
+	st    scrollTable
 	cols  []table.Column         // base column widths (re-fitted to the terminal on resize)
 	all   []service.GroupWithOrg // full set
 	rows  []service.GroupWithOrg // filtered (mirrors the table rows)
@@ -31,17 +31,15 @@ func newGroupsView(t Theme) groupsView {
 		{Title: "DEFAULT", Width: 8},
 		{Title: "PUBLIC", Width: 7},
 	}
-	tbl := table.New(table.WithColumns(cols), table.WithFocused(true))
-	tbl.SetStyles(t.Table)
-	return groupsView{tbl: tbl, cols: cols, theme: t, flt: newFilterState("type to filter by org / name / visibility…")}
+	return groupsView{st: newScrollTable(cols, t.Table), cols: cols, theme: t, flt: newFilterState("type to filter by org / name / visibility…")}
 }
 
 func (v *groupsView) setSize(w, h int) {
-	v.tbl.SetWidth(w)
-	v.tbl.SetColumns(fillWidth(v.cols, w))
+	v.st.setWidth(w)
+	v.st.setColumns(fillWidth(v.cols, w))
 	v.flt.setWidth(w - 4)
 	if h > 3 {
-		v.tbl.SetHeight(h)
+		v.st.setHeight(h)
 	}
 }
 
@@ -67,7 +65,7 @@ func (v *groupsView) applyFilter() {
 			g.Visibility, yesNo(g.Default), yesNo(g.AllowsPublic),
 		})
 	}
-	v.tbl.SetRows(tr)
+	v.st.setRows(tr)
 }
 
 func (v groupsView) haystack(row service.GroupWithOrg) string {
@@ -96,12 +94,12 @@ func (v groupsView) updateFilter(msg tea.Msg) (groupsView, tea.Cmd) {
 
 func (v groupsView) update(msg tea.Msg) (groupsView, tea.Cmd) {
 	var cmd tea.Cmd
-	v.tbl, cmd = v.tbl.Update(msg)
+	cmd = v.st.update(msg)
 	return v, cmd
 }
 
 func (v groupsView) selected() (service.GroupWithOrg, bool) {
-	i := v.tbl.Cursor()
+	i := v.st.cursor()
 	if i < 0 || i >= len(v.rows) {
 		return service.GroupWithOrg{}, false
 	}
@@ -113,7 +111,7 @@ func (v groupsView) view() string {
 	if v.flt.shown() {
 		last = v.flt.line(v.theme)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, v.tbl.View(), last)
+	return lipgloss.JoinVertical(lipgloss.Left, v.st.view(), last)
 }
 
 func (v groupsView) detail() string {

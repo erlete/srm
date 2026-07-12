@@ -92,14 +92,16 @@ func loadHealthCmd(ctx context.Context, mgr *service.Manager, orgFilter string) 
 			rep.AgentCurrent, rep.AgentBehind, rep.AgentOK = cur, len(behind), ok
 			reps = append(reps, rep)
 		}
-		return healthMsg{reports: reps, host: hostDoctor(ctx, mgr)}
+		return healthMsg{reports: reps, host: hostDoctor(ctx, mgr, orgs)}
 	}
 }
 
 // hostDoctor probes this host: capacity mode, the box-wide stats (slice/disk/cache
-// via HostHealth), and whether the build toolchain the runners rely on is present.
-// exec.LookPath works on both OSes; the stats degrade off-host.
-func hostDoctor(ctx context.Context, mgr *service.Manager) healthHost {
+// via HostHealth), whether the build toolchain the runners rely on is present, the
+// configured dependency-manifest drift, and (when docker.rootlessDinD is on) the
+// rootless-Docker readiness. exec.LookPath works on both OSes; the stats degrade
+// off-host. orgs scopes the manifest/DinD probes to the same set as the org cards.
+func hostDoctor(ctx context.Context, mgr *service.Manager, orgs []string) healthHost {
 	mode := mgr.Config().ResourceMode
 	switch mode {
 	case "":
@@ -115,7 +117,19 @@ func hostDoctor(ctx context.Context, mgr *service.Manager) healthHost {
 		path, err := exec.LookPath(name)
 		probes = append(probes, toolProbe{Name: name, Path: path, Found: err == nil})
 	}
-	return healthHost{CapacityMode: mode, Tools: probes, Stats: mgr.HostHealth(ctx)}
+	host := healthHost{CapacityMode: mode, Tools: probes, Stats: mgr.HostHealth(ctx)}
+
+	// Dependency-manifest drift (M3): only meaningful when a host manifest is
+	// configured. A probe error leaves ManifestOK false (the panel renders "unknown").
+	if man := mgr.HostManifest(); !man.Empty() {
+		host.ManifestSet = true
+		if missing, err := mgr.HostDrift(ctx, man); err == nil {
+			host.ManifestMissing, host.ManifestOK = missing, true
+		}
+	}
+	// Rootless-DinD host readiness (M3): Enabled=false unless docker.rootlessDinD is on.
+	host.DinD = mgr.DinDReadiness(orgs)
+	return host
 }
 
 // deleteRunnerCmd deregisters a single (remote) runner via the API.

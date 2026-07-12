@@ -19,6 +19,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -98,6 +99,11 @@ type Model struct {
 	infoGroupRepos      []core.Repo
 	infoGroupReposState string // "", looking, loaded
 
+	// memHistory is a bounded per-runner/slot ring of recent live cgroup-memory
+	// samples (keyed via memKey*), appended on each host-tier merge and rendered as a
+	// sparkline in the Information panel. Keys for vanished runners are pruned.
+	memHistory map[string][]int64
+
 	// Auto-refresh.
 	autoOn    bool
 	autoEvery time.Duration
@@ -122,7 +128,11 @@ type Model struct {
 	// token a preview's Apply must escalate to a typed-confirm for (uninstall).
 	pendingOp    *opSpec
 	pendingTyped string
-	op           opState
+	// pendingTyped2 is a chained SECOND typed token (e.g. "PURGE"): when the first
+	// typed-confirm arms and proceeds, a non-empty pendingTyped2 opens another
+	// typed-confirm before the op runs. Used by the guarded uninstall purge.
+	pendingTyped2 string
+	op            opState
 
 	formOpen bool
 	form     *createForm
@@ -134,6 +144,14 @@ type Model struct {
 	groupForm *groupForm // group create/edit form (nil = closed)
 
 	runnerEdit *runnerEditForm // persistent-runner group edit (nil = closed)
+
+	upgradeForm *upgradeForm // agent-upgrade options form (--to-version / --force; nil = closed)
+
+	uninstallForm *uninstallForm // uninstall Step-1 scope + toggles form (nil = closed)
+
+	onboardForm *onboardForm  // lifecycle onboard wizard (add an org; nil = closed)
+	restoreOpen bool          // lifecycle restore backup picker is open
+	restore     restorePicker
 
 	// Repo-access picker (autocomplete multi-select) for a "selected" group.
 	pickerOpen bool
@@ -244,6 +262,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.runnerEdit != nil {
 		return m.updateRunnerEditForm(msg)
 	}
+	// The upgrade-options form captures the loop while open (before the preview).
+	if m.upgradeForm != nil {
+		return m.updateUpgradeForm(msg)
+	}
+	// The uninstall Step-1 form captures the loop while open (before the preview).
+	if m.uninstallForm != nil {
+		return m.updateUninstallForm(msg)
+	}
+	// The onboard wizard captures the loop while open.
+	if m.onboardForm != nil {
+		return m.updateOnboardForm(msg)
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -284,7 +314,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.snap.HostTierAvailable = false
 			return m, nil
 		}
-		m.snap = service.MergeHostTier(m.snap, msg.rep)
+		m.snap = service.MergeHostTier(m.snap, msg.rep, time.Now())
+		m.recordMemSamples()
 		m.feedFleetViews()
 		m.layout()
 		return m, nil
@@ -388,6 +419,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		spec := msg.spec
 		m.pendingOp = &spec
 		m.pendingTyped = msg.typedToken
+		m.pendingTyped2 = msg.typedToken2
 		return m, nil
 
 	case groupSavedMsg:
@@ -446,6 +478,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.runnerEdit = newRunnerEditForm(msg.runner, msg.groups)
 		return m, m.runnerEdit.form.Init()
+
+	case backupsMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.status, m.stErr = "list backups: "+msg.err.Error(), true
+			return m, nil
+		}
+		if len(msg.backups) == 0 {
+			m.status, m.stErr = "no config backups found in "+msg.dir+" (create one with the Back up card first)", false
+			return m, nil
+		}
+		m.restore = restorePicker{theme: m.theme, backups: msg.backups}
+		m.restoreOpen = true
+		return m, nil
+
+	case reloadMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.status, m.stErr = msg.err.Error(), true
+			return m, nil
+		}
+		m.status, m.stErr = msg.note, msg.warn
+		// The config changed under us (new org / restored dir): drop the cached fleet
+		// snapshot so the next fleet view reloads against the reloaded Manager.
+		m.fleetLoaded = false
+		return m, m.reloadCurrent()
 	}
 
 	return m, nil
@@ -533,7 +591,7 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.previewOpen {
 		switch {
 		case key.Matches(msg, m.keys.Quit), key.Matches(msg, m.keys.Esc), msg.String() == "n":
-			m.previewOpen, m.pendingOp, m.pendingTyped = false, nil, ""
+			m.previewOpen, m.pendingOp, m.pendingTyped, m.pendingTyped2 = false, nil, "", ""
 			m.status, m.stErr = "cancelled", false
 			return m, nil
 		case msg.String() == "left", msg.String() == "right", key.Matches(msg, m.keys.Tab), key.Matches(msg, m.keys.ShiftTab):
@@ -545,7 +603,36 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.preview.apply {
 				return m.applyPreview()
 			}
-			m.previewOpen, m.pendingOp, m.pendingTyped = false, nil, ""
+			m.previewOpen, m.pendingOp, m.pendingTyped, m.pendingTyped2 = false, nil, "", ""
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// The restore backup picker captures all keys while open.
+	if m.restoreOpen {
+		switch {
+		case key.Matches(msg, m.keys.Esc), key.Matches(msg, m.keys.Quit):
+			m.restoreOpen = false
+			m.status, m.stErr = "restore cancelled", false
+			return m, nil
+		case key.Matches(msg, m.keys.Up):
+			m.restore.move(-1)
+			return m, nil
+		case key.Matches(msg, m.keys.Down):
+			m.restore.move(1)
+			return m, nil
+		case key.Matches(msg, m.keys.Enter):
+			b, ok := m.restore.selected()
+			if !ok {
+				return m, nil
+			}
+			m.restoreOpen = false
+			archive := b.Path
+			m.modal = newConfirm(m.theme, "Restore config?",
+				fmt.Sprintf("Overwrite the current config dir with %q? config.yaml, secrets, and per-org keys are replaced (back up first if unsure).", b.Name))
+			m.onConfirm = func() tea.Cmd { return restoreCmd(archive, m.mgr) }
+			m.modalOpen = true
 			return m, nil
 		}
 		return m, nil
@@ -579,11 +666,21 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.typedOpen {
 		switch {
 		case key.Matches(msg, m.keys.Esc):
-			m.typedOpen, m.pendingOp, m.pendingTyped = false, nil, ""
+			m.typedOpen, m.pendingOp, m.pendingTyped, m.pendingTyped2 = false, nil, "", ""
 			m.status, m.stErr = "cancelled", false
 			return m, nil
 		case key.Matches(msg, m.keys.Enter):
 			if m.typed.matched() {
+				// A chained second token (purge) opens another typed-confirm instead of
+				// running the op; only an empty pendingTyped2 arms the operation.
+				if m.pendingTyped2 != "" {
+					tok := m.pendingTyped2
+					m.pendingTyped2 = ""
+					m.typed = newTypedConfirm(m.theme, "Confirm PURGE",
+						"This ALSO deletes /etc/srm (config + App keys) after a backup. Type PURGE exactly to proceed.",
+						tok, tok)
+					return m, nil
+				}
 				return m.runPendingOp()
 			}
 			return m, nil
@@ -753,12 +850,16 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.lifecycle.move(1)
 		}
 	case tabHealth:
-		// up/down select the org card that e/u act on.
+		// up/down select the org card that e/u act on; PgUp/PgDn scroll the host panel.
 		switch {
 		case key.Matches(msg, m.keys.Up):
 			m.health.move(-1)
 		case key.Matches(msg, m.keys.Down):
 			m.health.move(1)
+		case key.Matches(msg, m.keys.PageUp):
+			m.health.pageHost(-1)
+		case key.Matches(msg, m.keys.PageDown):
+			m.health.pageHost(1)
 		}
 	default:
 		m.runners, cmd = m.runners.update(msg)
@@ -802,6 +903,54 @@ func (m Model) visibleSlots(ss []service.FusedSlot) []service.FusedSlot {
 		}
 	}
 	return out
+}
+
+// memHistoryMax bounds the per-runner memory ring (last N host-tier samples).
+const memHistoryMax = 30
+
+// memKeyRunner / memKeySlot namespace the memHistory keys so a runner and a slot can
+// never collide (org + name, each in its own "r"/"s" space).
+func memKeyRunner(r service.FusedRunner) string { return "r\x00" + r.Org + "\x00" + r.Runner.Name }
+func memKeySlot(s service.FusedSlot) string      { return "s\x00" + s.Org + "\x00" + s.Slot }
+
+// memHistoryFor returns the recorded samples for a key (nil when none / not yet
+// sampled), safe on a nil map.
+func (m Model) memHistoryFor(key string) []int64 { return m.memHistory[key] }
+
+// recordMemSamples appends the current live cgroup-memory reading for every audited
+// runner and host-local slot to its bounded ring, then prunes rings for keys no
+// longer in the snapshot (destroyed runners/slots). Called after a host-tier merge,
+// the only point MemCur is real; an unknown (-1) reading marks the key live but does
+// not push a bogus zero.
+func (m *Model) recordMemSamples() {
+	if m.memHistory == nil {
+		m.memHistory = map[string][]int64{}
+	}
+	live := map[string]bool{}
+	push := func(key string, v int64) {
+		live[key] = true
+		if v < 0 {
+			return
+		}
+		h := append(m.memHistory[key], v)
+		if len(h) > memHistoryMax {
+			h = h[len(h)-memHistoryMax:]
+		}
+		m.memHistory[key] = h
+	}
+	for _, r := range m.snap.Runners {
+		if r.HostKnown {
+			push(memKeyRunner(r), r.MemCur)
+		}
+	}
+	for _, s := range m.snap.Slots {
+		push(memKeySlot(s), s.MemCur)
+	}
+	for k := range m.memHistory {
+		if !live[k] {
+			delete(m.memHistory, k)
+		}
+	}
 }
 
 // feedFleetViews pushes the snapshot (org-filtered) into the runner/slot/drift views.
@@ -855,15 +1004,19 @@ func (m Model) runLifecycle() (tea.Model, tea.Cmd) {
 	case lifeProvision:
 		return m.startProvision()
 	case lifeUninstall:
-		m.loading = true
-		m.status = "computing blast radius…"
-		return m, uninstallPreviewCmd(m.ctx, m.mgr, m.theme, m.orgFilter)
+		// Step 1: collect scope + Keep*/Force/Purge; the form's completion runs the
+		// dry-run blast-radius preview, which then escalates the destructive gates.
+		m.uninstallForm = newUninstallForm(m.mgr.OrgNames(), m.orgFilter)
+		return m, m.uninstallForm.form.Init()
 	case lifeOnboard:
-		m.status, m.stErr = "onboarding: run `srm init` (writes config + validates GitHub App auth)", false
-		return m, nil
+		// In-TUI onboarding: the same org-credential form as `srm init`, then a
+		// save + reload + auth check. The .pem placeholder is seeded from the config dir.
+		m.onboardForm = newOnboardForm(filepath.Dir(m.mgr.ConfigPath()))
+		return m, m.onboardForm.form.Init()
 	case lifeRestore:
-		m.status, m.stErr = "restore: run `srm restore <archive>` (reloads config in place)", false
-		return m, nil
+		m.loading = true
+		m.status = "scanning for config backups…"
+		return m, loadBackupsCmd(m.mgr)
 	}
 	return m, nil
 }
@@ -1002,7 +1155,7 @@ func (m *Model) openRunnerInfo(r service.FusedRunner) tea.Cmd {
 // openSlotInfo stores an ephemeral slot as the info subject and opens the panel.
 // Shared by the Ephemeral and Drift tabs.
 func (m *Model) openSlotInfo(s service.FusedSlot) {
-	title, body := slotInfo(m.theme, s)
+	title, body := slotInfo(m.theme, s, m.memHistoryFor(memKeySlot(s)))
 	m.info.set(title, body)
 	m.infoOpen = true
 	m.layout()
@@ -1040,7 +1193,7 @@ func (m *Model) rebuildRunnerInfo() {
 	if m.infoRunner == nil {
 		return
 	}
-	title, body := runnerInfo(m.theme, *m.infoRunner, m.infoJob, m.infoJobState)
+	title, body := runnerInfo(m.theme, *m.infoRunner, m.memHistoryFor(memKeyRunner(*m.infoRunner)), m.infoJob, m.infoJobState)
 	m.info.set(title, body)
 }
 
@@ -1133,9 +1286,10 @@ func (m Model) startUpgrade() (tea.Model, tea.Cmd) {
 	if !m.requireHost("upgrade") {
 		return m, nil
 	}
-	m.loading = true
-	m.status = "planning upgrade…"
-	return m, planUpgradeCmd(m.ctx, m.mgr, m.actionOrg(), m.selectionOnly(), m.theme)
+	// Collect --to-version / --force first; the form's completion runs the dry-run
+	// preview with the same scope startUpgrade would have used.
+	m.upgradeForm = newUpgradeForm()
+	return m, m.upgradeForm.form.Init()
 }
 
 // startRollback: confirm, then restore each runner to its previous version. Scoped
@@ -1253,7 +1407,7 @@ func (m Model) onEsc() (tea.Model, tea.Cmd) {
 // no op in flight, not filtering, and not already loading.
 func (m Model) idleForAuto() bool {
 	return !m.loading && !m.modalOpen && !m.typedOpen && !m.previewOpen && !m.formOpen && !m.infoOpen &&
-		m.setForm == nil && m.retForm == nil && m.groupForm == nil && m.runnerEdit == nil && !m.pickerOpen && !m.orgPickOpen && !m.op.open && !m.creating && !m.activeFiltering()
+		m.setForm == nil && m.retForm == nil && m.groupForm == nil && m.runnerEdit == nil && m.upgradeForm == nil && m.uninstallForm == nil && m.onboardForm == nil && !m.restoreOpen && !m.pickerOpen && !m.orgPickOpen && !m.op.open && !m.creating && !m.activeFiltering()
 }
 
 // runConfirmed runs the yes/no-confirmed action: a pending op (through the op
@@ -1291,7 +1445,7 @@ func (m Model) applyPreview() (tea.Model, tea.Cmd) {
 // runPendingOp launches the gated operation through the op-runner.
 func (m Model) runPendingOp() (tea.Model, tea.Cmd) {
 	m.modalOpen, m.typedOpen = false, false
-	m.pendingTyped = ""
+	m.pendingTyped, m.pendingTyped2 = "", ""
 	spec := *m.pendingOp
 	m.pendingOp = nil
 	m.op = startOp(m.ctx, m.mgr, spec)
@@ -1581,6 +1735,91 @@ func (m Model) updateRunnerEditForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case huh.StateAborted:
 		m.runnerEdit = nil
 		m.status, m.stErr = "edit cancelled", false
+		return m, nil
+	}
+	return m, cmd
+}
+
+// updateUpgradeForm drives the agent-upgrade options form. On completion it runs
+// the dry-run preview with the chosen --to-version / --force threaded in (same scope
+// startUpgrade would have used); on abort it just closes.
+func (m Model) updateUpgradeForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = ws.Width, ws.Height
+		m.help.SetWidth(ws.Width)
+		m.layout()
+	}
+	fm, cmd := m.upgradeForm.form.Update(msg)
+	if f, ok := fm.(*huh.Form); ok {
+		m.upgradeForm.form = f
+	}
+	switch m.upgradeForm.form.State {
+	case huh.StateCompleted:
+		uf := m.upgradeForm
+		m.upgradeForm = nil
+		m.loading = true
+		m.status = "planning upgrade…"
+		return m, planUpgradeCmd(m.ctx, m.mgr, m.actionOrg(), m.selectionOnly(), uf.toVersion(), uf.force, m.theme)
+	case huh.StateAborted:
+		m.upgradeForm = nil
+		m.status, m.stErr = "upgrade cancelled", false
+		return m, nil
+	}
+	return m, cmd
+}
+
+// updateUninstallForm drives the uninstall Step-1 form. On completion it runs the
+// dry-run blast-radius preview with the chosen scope + toggles (which then escalates
+// the destructive gates); on abort it just closes.
+func (m Model) updateUninstallForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = ws.Width, ws.Height
+		m.help.SetWidth(ws.Width)
+		m.layout()
+	}
+	fm, cmd := m.uninstallForm.form.Update(msg)
+	if f, ok := fm.(*huh.Form); ok {
+		m.uninstallForm.form = f
+	}
+	switch m.uninstallForm.form.State {
+	case huh.StateCompleted:
+		opts := m.uninstallForm.opts()
+		m.uninstallForm = nil
+		m.loading = true
+		m.status = "computing blast radius…"
+		return m, uninstallPreviewCmd(m.ctx, m.mgr, m.theme, opts)
+	case huh.StateAborted:
+		m.uninstallForm = nil
+		m.status, m.stErr = "uninstall cancelled", false
+		return m, nil
+	}
+	return m, cmd
+}
+
+// updateOnboardForm drives the lifecycle onboard wizard. On completion it upserts the
+// org into the in-memory config, then persists + reloads + validates it off the loop;
+// on abort it just closes.
+func (m Model) updateOnboardForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = ws.Width, ws.Height
+		m.help.SetWidth(ws.Width)
+		m.layout()
+	}
+	fm, cmd := m.onboardForm.form.Update(msg)
+	if f, ok := fm.(*huh.Form); ok {
+		m.onboardForm.form = f
+	}
+	switch m.onboardForm.form.State {
+	case huh.StateCompleted:
+		oc := m.onboardForm.fields.ToOrgConfig()
+		m.onboardForm = nil
+		m.mgr.UpsertOrg(oc)
+		m.loading = true
+		m.status = "saving org " + oc.Name + "…"
+		return m, onboardSaveCmd(m.ctx, m.mgr, oc.Name)
+	case huh.StateAborted:
+		m.onboardForm = nil
+		m.status, m.stErr = "onboarding cancelled", false
 		return m, nil
 	}
 	return m, cmd

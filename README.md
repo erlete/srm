@@ -263,12 +263,14 @@ different natures, so they live in **separate, never-mistakable tabs** (distinct
 columns, create/destroy flows, and addressing - runner **name** vs **slot id**):
 
 - **Tabs** (`tab`/`shift+tab`): **Health** (per-org auth + retention cards + a
-  host panel), **Persistent** (cross-org runner table with ORG/MACHINE columns +
+  scrollable host panel - wheel or `PgUp`/`PgDn`), **Persistent** (cross-org
+  runner table with ORG/MACHINE columns +
   a color-coded detail line), **Ephemeral** (host-local slot lanes judged by host
   health - state / restarts / conformance / memory + an OOM badge), **Groups**,
   **Drift** (host-vs-GitHub audit with fix/reap), and **Settings** (the capacity
-  policy + a Lifecycle operations panel). `i` opens a scrollable **Information**
-  panel for the selected runner / slot / group / org / drift row.
+  policy + a Lifecycle panel with in-TUI **onboard** and **restore** wizards).
+  `i` opens a scrollable **Information** panel for the selected runner / slot /
+  group / org / drift row (with a recent-memory sparkline for a runner / slot).
 - `o` filters the visible orgs (multi-select); `r` refresh; `/` incremental
   **filter** (Persistent / Ephemeral / Groups / Health / Drift);
   `n` opens the **create wizard** (persistent runners *or* ephemeral slots) with a
@@ -276,6 +278,9 @@ columns, create/destroy flows, and addressing - runner **name** vs **slot id**):
   teardown if local, else deregister - or an ephemeral slot by id) behind a
   confirm modal; on **Settings**, `e` opens the **capacity editor** (mode,
   per-runner caps, slice ceiling → writes `config.yaml`, validated).
+- **Mouse**: the wheel scrolls the active table (and the Health host panel); a
+  click on the tab bar switches tabs; a click on a table row selects it (a click
+  in the multi-select gutter toggles its checkbox).
 - `?` toggles full help; `↑/↓` move; `q` quits.
 
 ## License

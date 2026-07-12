@@ -4,6 +4,46 @@ All notable changes to `srm` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-07-12
+
+Follow-up TUI release that builds out the deferred items from the v2.1.0 release
+audit: richer control-plane forms, deeper Health/Drift observability, in-TUI
+lifecycle wizards, and per-row mouse selection.
+
+### Added
+- **Upgrade options form** - pressing `u` now opens a small form to pin a target
+  agent version (blank = the configured pin, else GitHub-current) and toggle
+  `force` (reinstall / allow a downgrade) before the dry-run preview; both thread
+  into the preview and the applied upgrade. Scope and the host-wide typed-confirm
+  are unchanged.
+- **Lifecycle Onboard + Restore wizards** - the Settings > Lifecycle panel gains
+  a working **Onboard** card (the same org-credential form as `srm init`, then a
+  save + in-place reload + GitHub auth check) and a **Restore** card (pick a
+  config-dir backup, confirm, restore, and reload). The manager reloads in place,
+  so new/restored config shows without restarting the TUI.
+- **Uninstall options form + safer purge** - the Uninstall card opens a Step-1
+  form exposing the scope (full host / one org) and the Keep\*/Force/Purge toggles
+  the CLI has. The fail-safe default still leaves `/etc/srm` in place; selecting a
+  purge that would remove it escalates to a second `PURGE` typed-confirm and an
+  up-front writable-backup pre-check.
+- **Memory sparkline** - the runner / slot Information panel shows a compact
+  block-rune `trend` sparkline of recent live cgroup memory, scaled to the cgroup
+  cap and captioned with the sample count (one sample per refresh, capped at 30).
+- **Per-row mouse click** - a left click on a fleet table row selects it; a click
+  in the multi-select gutter also toggles its checkbox (persistent, ephemeral,
+  groups, and drift tables).
+
+### Changed
+- **Drift tab** - a `FIX-PLAN` column states the remediation for each row (refresh
+  drop-in, restart, recreate lane, update the srm binary, ...), and a provenance
+  line records when the drift was last audited (a read-only pass).
+- **Health host panel** - adds a dependency-manifest drift summary (satisfied /
+  N missing / unknown) and, when `docker.rootlessDinD` is on, a rootless-Docker
+  readiness block (a pass/fail line per prerequisite). The rootless-DinD probe now
+  lives in the service layer and is shared by `srm doctor` and the TUI. The panel
+  is now **scrollable** (mouse wheel or `PgUp`/`PgDn`) with a `▲▼ N%` hint, so the
+  full read-out is reachable when it is taller than the screen.
+
 ## [2.1.0] - 2026-07-10
 
 Major TUI release: the terminal UI becomes a full fleet **cockpit and control

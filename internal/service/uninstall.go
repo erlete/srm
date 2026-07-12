@@ -13,6 +13,10 @@ import (
 	"github.com/erlete/srm/internal/runner"
 )
 
+// defaultBackupDir is where the pre-purge config backup is written when
+// UninstallOpts.BackupDir is empty.
+const defaultBackupDir = "/var/backups"
+
 // UninstallOpts controls a host uninstall. The zero value (Org "", all Keep*
 // false) is a full host purge that LEAVES /etc/srm in place - secrets are removed
 // only with Purge.
@@ -181,7 +185,7 @@ func (m *Manager) Uninstall(ctx context.Context, opts UninstallOpts) (UninstallR
 	if rep.ConfigDir != "" {
 		backupDir := opts.BackupDir
 		if backupDir == "" {
-			backupDir = "/var/backups"
+			backupDir = defaultBackupDir
 		}
 		_ = os.MkdirAll(backupDir, 0o700)
 		out := filepath.Join(backupDir, fmt.Sprintf("srm-config-%d.tar.gz", time.Now().Unix()))
@@ -204,6 +208,38 @@ func (m *Manager) Uninstall(ctx context.Context, opts UninstallOpts) (UninstallR
 		}
 	}
 	return rep, nil
+}
+
+// PurgeRemovesConfig reports whether these opts would actually delete /etc/srm - a
+// full-host purge that does not keep the config dir. The extra safety gates (a second
+// typed confirm, the writable-backup pre-check) only apply in this case; a single-org
+// or keep-config purge never touches the config dir, so it must not over-gate.
+func (opts UninstallOpts) PurgeRemovesConfig() bool {
+	return opts.Purge && !opts.KeepConfig && opts.Org == ""
+}
+
+// EnsureBackupDirWritable verifies srm can write the pre-purge config backup BEFORE a
+// purge is armed, so an unwritable backup dir fails the gate up front rather than
+// aborting mid-teardown (the config purge refuses to delete App keys it couldn't
+// snapshot). A no-op unless the opts would actually remove /etc/srm. Creates the dir
+// if missing and probes it with a temp file. Must run as root on the host.
+func (m *Manager) EnsureBackupDirWritable(opts UninstallOpts) error {
+	if !opts.PurgeRemovesConfig() {
+		return nil
+	}
+	dir := opts.BackupDir
+	if dir == "" {
+		dir = defaultBackupDir
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("backup dir %s cannot be created (purge would abort to protect the App keys): %w", dir, err)
+	}
+	probe := filepath.Join(dir, ".srm-backup-probe")
+	if err := os.WriteFile(probe, []byte("srm"), 0o600); err != nil {
+		return fmt.Errorf("backup dir %s is not writable (purge would abort to protect the App keys): %w", dir, err)
+	}
+	_ = os.Remove(probe)
+	return nil
 }
 
 // UninstallPreview returns the blast-radius plan (what would be removed) without

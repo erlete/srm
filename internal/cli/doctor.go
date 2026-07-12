@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/erlete/srm/internal/config"
+	"github.com/erlete/srm/internal/service"
 )
 
 // limitsLine renders the set cgroup directives of r as a compact one-liner for
@@ -27,6 +28,29 @@ func limitsLine(r config.ResourceLimits) string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// printDinDReadiness renders the rootless-Docker host readiness report (gathered by
+// the service, Linux-only). A disabled report prints nothing; otherwise it lists the
+// cross-org caveat then each check as a padded `name  detail` line, matching the rest
+// of `doctor`'s host section.
+func printDinDReadiness(rep service.DinDReport) {
+	if !rep.Enabled {
+		return
+	}
+	fmt.Println()
+	fmt.Println("rootless docker (docker.rootlessDinD on):")
+
+	// Per-JOB clean-slate always holds (each job wipes its data-root). The cross-ORG
+	// uid/data boundary, however, exists only under isolation.perOrgUsers.
+	if rep.CrossOrgRisk {
+		fmt.Println("  WARNING: isolation.perOrgUsers is off with >1 org - rootless DinD gives")
+		fmt.Println("           per-JOB clean-slate but NO cross-ORG boundary (shared user/subuid/")
+		fmt.Println("           data-root). Enable isolation.perOrgUsers for a cross-org boundary.")
+	}
+	for _, c := range rep.Checks {
+		fmt.Printf("  %-18s %s\n", c.Name, c.Detail)
+	}
 }
 
 func newDoctorCmd() *cobra.Command {
@@ -115,7 +139,7 @@ func newDoctorCmd() *cobra.Command {
 			// Rootless-DinD readiness (Linux only; no-op on Windows). When
 			// docker.rootlessDinD is on, these prerequisites fail a build mid-job (not at
 			// startup) if absent, so surface them here. Reflects THIS host's kernel + PATH.
-			dindReadiness(mgr.Config(), orgs)
+			printDinDReadiness(mgr.DinDReadiness(orgs))
 
 			fmt.Println("\nFor deep host/runner drift + health (and repair), run `srm reconcile`.")
 			return nil

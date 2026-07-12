@@ -17,7 +17,7 @@ import (
 // address a runner by name. It now surfaces the live cgroup memory (LIVE) and
 // OOM-kill count the service already collected but the table used to hide.
 type ephemeralView struct {
-	tbl   table.Model
+	st    scrollTable
 	cols  []table.Column      // base column widths (re-fitted to the terminal on resize)
 	all   []service.FusedSlot // full set
 	rows  []service.FusedSlot // filtered (mirrors the table rows)
@@ -39,19 +39,17 @@ func newEphemeralView(t Theme) ephemeralView {
 		{Title: "MEM peak/cap", Width: 15},
 		{Title: "OOM", Width: 5},
 	}
-	tbl := table.New(table.WithColumns(cols), table.WithFocused(true))
-	tbl.SetStyles(t.Table)
-	return ephemeralView{tbl: tbl, cols: cols, theme: t, sel: newSelectionSet(),
+	return ephemeralView{st: newScrollTable(cols, t.Table), cols: cols, theme: t, sel: newSelectionSet(),
 		flt: newFilterState("type to filter by org / slot / state…")}
 }
 
 func (v *ephemeralView) setSize(w, h int) {
 	v.width = w
-	v.tbl.SetWidth(w)
-	v.tbl.SetColumns(fillWidth(v.cols, w))
+	v.st.setWidth(w)
+	v.st.setColumns(fillWidth(v.cols, w))
 	v.flt.setWidth(w - 4)
 	if h > 3 {
-		v.tbl.SetHeight(h)
+		v.st.setHeight(h)
 	}
 }
 
@@ -62,7 +60,7 @@ func (v *ephemeralView) setRows(rows []service.FusedSlot) {
 
 // applyFilter recomputes the visible slot rows, preserving cursor position.
 func (v *ephemeralView) applyFilter() {
-	cursor := v.tbl.Cursor()
+	cursor := v.st.cursor()
 	q := v.flt.query()
 	v.rows = v.rows[:0]
 	for _, s := range v.all {
@@ -78,12 +76,12 @@ func (v *ephemeralView) applyFilter() {
 			oomCell(s.OOMKills),
 		})
 	}
-	v.tbl.SetRows(tr)
+	v.st.setRows(tr)
 	if cursor >= len(tr) {
 		cursor = len(tr) - 1
 	}
 	if cursor >= 0 {
-		v.tbl.SetCursor(cursor)
+		v.st.setCursor(cursor)
 	}
 }
 
@@ -112,12 +110,12 @@ func (v ephemeralView) updateFilter(msg tea.Msg) (ephemeralView, tea.Cmd) {
 
 func (v ephemeralView) update(msg tea.Msg) (ephemeralView, tea.Cmd) {
 	var cmd tea.Cmd
-	v.tbl, cmd = v.tbl.Update(msg)
+	cmd = v.st.update(msg)
 	return v, cmd
 }
 
 func (v ephemeralView) selected() (service.FusedSlot, bool) {
-	i := v.tbl.Cursor()
+	i := v.st.cursor()
 	if i < 0 || i >= len(v.rows) {
 		return service.FusedSlot{}, false
 	}
@@ -128,7 +126,7 @@ func (v ephemeralView) selected() (service.FusedSlot, bool) {
 func (v *ephemeralView) focusKey(key string) {
 	for i, s := range v.rows {
 		if slotKey(s) == key {
-			v.tbl.SetCursor(i)
+			v.st.setCursor(i)
 			return
 		}
 	}
@@ -181,7 +179,7 @@ func (v ephemeralView) selectedSlots() []service.FusedSlot {
 	return out
 }
 
-func (v ephemeralView) tableView() string { return v.tbl.View() }
+func (v ephemeralView) tableView() string { return v.st.view() }
 
 func (v ephemeralView) bottomLine() string {
 	if v.flt.shown() {

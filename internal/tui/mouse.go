@@ -1,20 +1,22 @@
 package tui
 
 import (
-	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	lipgloss "charm.land/lipgloss/v2"
 )
 
-// Mouse support: wheel scrolls the active list/table (and the Information panel
-// and repo picker), and a left click on the tab bar switches tabs. Per-row click
-// selection on the scrolled inventory tables is intentionally not wired here:
-// bubbles/table hides its scroll offset (unexported start/end + viewport YOffset),
-// so an external click->row mapping can't be made reliably correct. Wheel + arrow
-// keys cover scrolling; space/enter cover selection.
+// Mouse support: the wheel scrolls the active list/table (and the Information panel
+// and repo picker), a left click on the tab bar switches tabs, and a left click on a
+// fleet table row selects it (a click in the multi-select gutter column toggles its
+// checkbox). Reliable click->row mapping is possible because the fleet tables use the
+// scrollTable wrapper, which owns its scroll offset (see scrolltable.go).
 
 // wheelStep is how many rows one wheel notch moves a table cursor.
 const wheelStep = 3
+
+// selectGutter is the width of the leading multi-select gutter column (persistent +
+// ephemeral tables); a click at x < this toggles the row's selection.
+const selectGutter = 3
 
 // onMouse routes a mouse event, mirroring onKey's overlay precedence. Blocking
 // modals are keyboard-only and swallow the mouse; the Information panel scrolls
@@ -23,7 +25,7 @@ func (m Model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// Overlays handled inside onKey that own the loop while open: ignore the mouse
 	// so a stray wheel/click can't act on the tab behind them. (The huh forms are
 	// intercepted before Update's switch, so they never reach here.)
-	if m.creating || m.op.open || m.orgPickOpen || m.previewOpen || m.typedOpen || m.modalOpen {
+	if m.creating || m.op.open || m.orgPickOpen || m.previewOpen || m.typedOpen || m.modalOpen || m.restoreOpen {
 		return m, nil
 	}
 	if m.infoOpen {
@@ -53,8 +55,11 @@ func (m Model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseClickMsg:
-		if e.Button == tea.MouseLeft {
-			if t, ok := m.tabAtX(e.X, e.Y); ok && t != m.tab {
+		if e.Button != tea.MouseLeft {
+			return m, nil
+		}
+		if t, ok := m.tabAtX(e.X, e.Y); ok {
+			if t != m.tab {
 				m.tab = t
 				// Capture the cmd before returning so enterTab's mutations
 				// (loading/layout/info-close) land in the returned model - return
@@ -63,37 +68,83 @@ func (m Model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				cmd := m.enterTab()
 				return m, cmd
 			}
+			return m, nil // clicked the active tab's own label
+		}
+		// Per-row click on the active fleet table: map the screen Y to a row via the
+		// scrollTable's owned offset, move the cursor there, and toggle selection when
+		// the click lands in the multi-select gutter.
+		if st := m.activeScrollTable(); st != nil {
+			if row := st.rowAt(e.Y - m.fleetDataTop()); row >= 0 {
+				st.setCursor(row)
+				if e.X < selectGutter && m.selectableTab() {
+					m.toggleSelect()
+				}
+			}
 		}
 		return m, nil
 	}
 	return m, nil
 }
 
-// scrollActive moves the active tab's selectable by delta rows (negative = up).
-// The multi-column inventory tables move their bubbles/table cursor; the Health
-// and Settings tabs step their single-selection lists one item per notch.
+// scrollActive moves the active tab's selectable by delta rows (negative = up). The
+// fleet tables move their scrollTable cursor (the owned viewport follows); Settings
+// steps its Lifecycle menu one item per notch; Health scrolls its host panel.
 func (m *Model) scrollActive(delta int) {
-	move := func(t *table.Model) {
+	if st := m.activeScrollTable(); st != nil {
 		if delta < 0 {
-			t.MoveUp(-delta)
+			st.moveUp(-delta)
 		} else {
-			t.MoveDown(delta)
+			st.moveDown(delta)
 		}
+		return
 	}
 	switch m.tab {
-	case tabEphemeral:
-		move(&m.ephemeral.tbl)
-	case tabGroups:
-		move(&m.groups.tbl)
-	case tabDrift:
-		move(&m.drift.tbl)
 	case tabHealth:
-		m.health.move(sign(delta))
+		// The wheel scrolls the (often tall) host panel; ↑/↓ still move the org card.
+		m.health.scrollHost(delta)
 	case tabSettings:
 		m.lifecycle.move(sign(delta))
-	default:
-		move(&m.runners.tbl)
 	}
+}
+
+// activeScrollTable returns the active tab's fleet table wrapper, or nil for the
+// non-table tabs (Health, Settings).
+func (m *Model) activeScrollTable() *scrollTable {
+	switch m.tab {
+	case tabEphemeral:
+		return &m.ephemeral.st
+	case tabGroups:
+		return &m.groups.st
+	case tabDrift:
+		return &m.drift.st
+	case tabPersistent:
+		return &m.runners.st
+	}
+	return nil
+}
+
+// fleetDataTop is the screen row of the active fleet table's FIRST data row: the body
+// origin (header + gap + tab bar), plus the per-tab lines rendered above the table
+// (the newer-template banner, and Drift's class-strip + provenance lines), plus the
+// table's frozen header. It is the anchor the click->row mapping subtracts.
+func (m Model) fleetDataTop() int {
+	top := lipgloss.Height(m.headerView()) + 1 + lipgloss.Height(m.tabBar())
+	banner := 0
+	if b := m.newerBanner(); b != "" {
+		banner = lipgloss.Height(b)
+	}
+	switch m.tab {
+	case tabDrift:
+		top += banner + 2 // class-strip line + provenance line
+	case tabGroups:
+		// groupsView.view() renders the table first (no banner above it)
+	default: // persistent, ephemeral (fleetBody prepends the banner)
+		top += banner
+	}
+	if st := m.activeScrollTable(); st != nil {
+		top += st.headerHeight()
+	}
+	return top
 }
 
 // tabBarRow is the screen row of the nav bar: the header height plus one blank

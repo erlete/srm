@@ -84,6 +84,7 @@ type ReconcileReport struct {
 // run as root on the host.
 func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFilter string, dryRun bool) (ReconcileReport, error) {
 	rep := ReconcileReport{}
+	cfg := m.currentConfig() // snapshot: a wizard's Reload can swap m.cfg mid-pass
 
 	// GitHub side, keyed by (org, name).
 	all, errs := m.ListAllRunners(ctx)
@@ -100,8 +101,8 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 	// NOT treat "absent from gh" as "deregistered" - that would mass-misclassify
 	// healthy local units as orphan-unit and (with --fix) delete them. Track which
 	// orgs we can actually trust the GitHub view for.
-	listedOK := make(map[string]bool, len(m.cfg.OrgNames()))
-	for _, name := range m.cfg.OrgNames() {
+	listedOK := make(map[string]bool, len(cfg.OrgNames()))
+	for _, name := range cfg.OrgNames() {
 		if _, failed := errs[name]; !failed {
 			listedOK[name] = true
 		}
@@ -115,7 +116,7 @@ func (m *Manager) Reconcile(ctx context.Context, fix, reapEphemeral bool, orgFil
 	if err != nil {
 		return rep, fmt.Errorf("enumerate host runner units (run as root on the host?): %w", err)
 	}
-	orgsByLen := append([]string{}, m.cfg.OrgNames()...)
+	orgsByLen := append([]string{}, cfg.OrgNames()...)
 	sort.Slice(orgsByLen, func(i, j int) bool { return len(orgsByLen[i]) > len(orgsByLen[j]) })
 
 	seen := make(map[key]bool)
@@ -390,8 +391,9 @@ func (m *Manager) repairRunner(ctx context.Context, st *RunnerState, apply bool)
 func (m *Manager) cacheSizes(ctx context.Context, host runner.Orchestrator) []CacheSize {
 	var out []CacheSize
 	out = append(out, CacheSize{"tool cache " + config.DefaultToolCacheRoot, host.DirSize(ctx, config.DefaultToolCacheRoot)})
-	if m.cfg.Isolation.PerOrgUsers {
-		for _, org := range m.cfg.OrgNames() {
+	cfg := m.currentConfig()
+	if cfg.Isolation.PerOrgUsers {
+		for _, org := range cfg.OrgNames() {
 			out = append(out, CacheSize{"dep cache " + config.DefaultCacheRoot + "/" + org, host.DirSize(ctx, config.DefaultCacheRoot+"/"+org)})
 		}
 	} else {

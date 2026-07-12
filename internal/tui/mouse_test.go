@@ -40,19 +40,19 @@ func TestWheelMovesActiveTableCursor(t *testing.T) {
 	tm, _ := m.Update(fleetMsg{snap: service.FleetSnapshot{Runners: fusedRunners(6)}})
 	m = tm.(Model)
 	m.tab = tabPersistent
-	if got := m.runners.tbl.Cursor(); got != 0 {
+	if got := m.runners.st.cursor(); got != 0 {
 		t.Fatalf("initial cursor = %d, want 0", got)
 	}
 
 	tm, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	m = tm.(Model)
-	if got := m.runners.tbl.Cursor(); got != wheelStep {
+	if got := m.runners.st.cursor(); got != wheelStep {
 		t.Fatalf("after wheel down, cursor = %d, want %d", got, wheelStep)
 	}
 
 	tm, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	m = tm.(Model)
-	if got := m.runners.tbl.Cursor(); got != 0 {
+	if got := m.runners.st.cursor(); got != 0 {
 		t.Fatalf("after wheel up, cursor = %d, want 0", got)
 	}
 }

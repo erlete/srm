@@ -20,7 +20,7 @@ import (
 // width selection highlight (see selection_test.go) - so badges/colors live in the
 // detail line, strips, and header, never in cells.
 type runnersView struct {
-	tbl   table.Model
+	st    scrollTable
 	cols  []table.Column        // base column widths (re-fitted to the terminal on resize)
 	all   []service.FusedRunner // full set (mirrors the snapshot)
 	rows  []service.FusedRunner // filtered (mirrors the table rows)
@@ -44,19 +44,17 @@ func newRunnersView(t Theme) runnersView {
 		{Title: "GROUP", Width: 7},
 		{Title: "LABELS", Width: 16},
 	}
-	tbl := table.New(table.WithColumns(cols), table.WithFocused(true))
-	tbl.SetStyles(t.Table)
-	return runnersView{tbl: tbl, cols: cols, theme: t, sel: newSelectionSet(),
+	return runnersView{st: newScrollTable(cols, t.Table), cols: cols, theme: t, sel: newSelectionSet(),
 		flt: newFilterState("type to filter by org / name / status / version / drift / label…")}
 }
 
 func (v *runnersView) setSize(w, h int) {
 	v.width = w
-	v.tbl.SetWidth(w)
-	v.tbl.SetColumns(fillWidth(v.cols, w))
+	v.st.setWidth(w)
+	v.st.setColumns(fillWidth(v.cols, w))
 	v.flt.setWidth(w - 4)
 	if h > 3 {
-		v.tbl.SetHeight(h)
+		v.st.setHeight(h)
 	}
 }
 
@@ -69,7 +67,7 @@ func (v *runnersView) setRows(rows []service.FusedRunner) {
 // cursor position so a re-render (e.g. a selection toggle or a host-tier merge)
 // does not jump the highlight.
 func (v *runnersView) applyFilter() {
-	cursor := v.tbl.Cursor()
+	cursor := v.st.cursor()
 	q := v.flt.query()
 	v.rows = v.rows[:0]
 	for _, row := range v.all {
@@ -90,12 +88,12 @@ func (v *runnersView) applyFilter() {
 			osCell(r.OS), groupCell(row.GroupName, r.GroupID), labelString(r.Labels),
 		})
 	}
-	v.tbl.SetRows(tr)
+	v.st.setRows(tr)
 	if cursor >= len(tr) {
 		cursor = len(tr) - 1
 	}
 	if cursor >= 0 {
-		v.tbl.SetCursor(cursor)
+		v.st.setCursor(cursor)
 	}
 }
 
@@ -126,13 +124,12 @@ func (v runnersView) updateFilter(msg tea.Msg) (runnersView, tea.Cmd) {
 }
 
 func (v runnersView) update(msg tea.Msg) (runnersView, tea.Cmd) {
-	var cmd tea.Cmd
-	v.tbl, cmd = v.tbl.Update(msg)
+	cmd := v.st.update(msg)
 	return v, cmd
 }
 
 func (v runnersView) selected() (service.FusedRunner, bool) {
-	i := v.tbl.Cursor()
+	i := v.st.cursor()
 	if i < 0 || i >= len(v.rows) {
 		return service.FusedRunner{}, false
 	}
@@ -144,7 +141,7 @@ func (v runnersView) selected() (service.FusedRunner, bool) {
 func (v *runnersView) focusKey(key string) {
 	for i, row := range v.rows {
 		if runnerKey(row) == key {
-			v.tbl.SetCursor(i)
+			v.st.setCursor(i)
 			return
 		}
 	}
@@ -203,7 +200,7 @@ func (v runnersView) selectedRunners() []service.FusedRunner {
 
 // tableView renders just the table (the Model composes strips, banner, and the
 // bottom detail/filter region around it).
-func (v runnersView) tableView() string { return v.tbl.View() }
+func (v runnersView) tableView() string { return v.st.view() }
 
 // bottomLine is the one-line region beneath the table: the filter line when
 // filtering, else the colored one-line detail for the selection.

@@ -1,13 +1,12 @@
-package cli
+package service
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/erlete/srm/internal/runner"
 )
 
-// TestSubIDRangeCount guards the doctor subuid/subgid probe against the substring trap
+// TestSubIDRangeCount guards the DinD subuid/subgid probe against the substring trap
 // (a user whose name is a colon-suffix of another, "acme" vs "srm-acme", must NOT read
 // off the other's range) and confirms it returns the COUNT so an undersized range is
 // flagged rather than greened. Exact first-field match, mirroring ensureSubIDFile.
@@ -57,10 +56,9 @@ func TestUsernsReadiness(t *testing.T) {
 		{"", "", false},
 	}
 	for _, c := range cases {
-		got := usernsReadiness(c.clone, c.maxns)
-		enabled := strings.HasPrefix(got, "enabled")
-		if enabled != c.wantEnabled {
-			t.Errorf("usernsReadiness(clone=%q, maxns=%q) = %q; enabled=%v want %v", c.clone, c.maxns, got, enabled, c.wantEnabled)
+		ok, detail := usernsReadiness(c.clone, c.maxns)
+		if ok != c.wantEnabled {
+			t.Errorf("usernsReadiness(clone=%q, maxns=%q) = (%v, %q); want enabled=%v", c.clone, c.maxns, ok, detail, c.wantEnabled)
 		}
 	}
 }

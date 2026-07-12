@@ -40,8 +40,8 @@ func newLifecycleView(t Theme) lifecycleView {
 			{lifeBackup, "Back up config", "Snapshot config.yaml + secrets.age + per-org keys to a tarball.", false, true},
 			{lifeProvision, "Provision host deps", "Install the configured host dependency manifest (apt/scripts/tool-cache).", true, true},
 			{lifeUninstall, "Uninstall (guarded)", "Tear down srm-created units, users, and trees on this host. Dry-run blast radius, then a typed hostname confirm.", true, true},
-			{lifeOnboard, "Onboard a new org", "Add an org (GitHub App creds) - run `srm init` (TUI onboarding planned).", false, false},
-			{lifeRestore, "Restore config", "Restore a config backup tarball - run `srm restore <archive>` (in-process reload planned).", false, false},
+			{lifeOnboard, "Onboard a new org", "Add an org's GitHub App creds, save + reload config, and verify auth - the same form as `srm init`.", false, true},
+			{lifeRestore, "Restore config", "Pick a config backup tarball, confirm, and restore it - then the Manager reloads in place.", false, true},
 		},
 	}
 }

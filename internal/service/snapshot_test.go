@@ -2,10 +2,15 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/erlete/srm/internal/core"
 	"github.com/erlete/srm/internal/runner"
 )
+
+// auditAt is a fixed audit timestamp for the merge tests (MergeHostTier stamps it
+// onto the snapshot; the value itself is arbitrary but deterministic).
+var auditAt = time.Unix(1_700_000_000, 0)
 
 // fastSnap builds a fast-tier snapshot by hand (no Manager / no network), so the
 // merge + count logic can be exercised deterministically.
@@ -41,10 +46,13 @@ func TestMergeHostTierPopulatesDriftAndMemory(t *testing.T) {
 		SliceCurrent: 12 << 30, SliceMax: 16 << 30,
 	}
 
-	got := MergeHostTier(snap, rep)
+	got := MergeHostTier(snap, rep, auditAt)
 
 	if !got.HostTierAvailable {
 		t.Fatal("HostTierAvailable should be true after a merge")
+	}
+	if !got.HostTierAt.Equal(auditAt) {
+		t.Errorf("HostTierAt = %v, want the passed audit time %v", got.HostTierAt, auditAt)
 	}
 	if !got.Host.Loaded || got.Host.SliceMax != 16<<30 {
 		t.Fatalf("host health not merged: %+v", got.Host)
@@ -65,7 +73,7 @@ func TestMergeHostTierLeavesUnmatchedUnaudited(t *testing.T) {
 	snap := fastSnap()
 	// A report that knows only r-1; r-2 must stay unaudited (no false healthy).
 	rep := ReconcileReport{Runners: []RunnerState{{Org: "acme", Name: "r-1", Class: ClassHealthy}}}
-	got := MergeHostTier(snap, rep)
+	got := MergeHostTier(snap, rep, auditAt)
 	if got.Runners[1].HostKnown {
 		t.Error("r-2 should remain unaudited (absent from the report)")
 	}
@@ -91,7 +99,7 @@ func TestDriftAndNewerCountsAfterMerge(t *testing.T) {
 		{Org: "acme", Name: "r-2", Class: ClassHealthy},
 		{Org: "acme", Name: "1", Class: ClassEphemeralStuck},
 	}}
-	got := MergeHostTier(snap, rep)
+	got := MergeHostTier(snap, rep, auditAt)
 	if n := got.NewerOnDisk(); n != 1 {
 		t.Errorf("NewerOnDisk = %d, want 1", n)
 	}

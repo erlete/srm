@@ -8,47 +8,6 @@ import (
 	"github.com/erlete/srm/internal/config"
 )
 
-// toOrgConfig must trim whitespace, parse the numeric fields the form already
-// validated, and split the label CSV - the same conversion `srm init` and the
-// first-run wizard both rely on.
-func TestOrgFieldsToOrgConfig(t *testing.T) {
-	f := orgFields{
-		name:        "  acme  ",
-		appIDStr:    " 123456 ",
-		instIDStr:   "7654321",
-		keyPath:     " /etc/srm/acme.pem ",
-		groupIDStr:  "7",
-		labelsStr:   "self-hosted, linux ,x64,",
-		installRoot: " /opt/actions-runners ",
-	}
-	got := f.toOrgConfig()
-	want := config.OrgConfig{
-		Name:           "acme",
-		AppID:          123456,
-		InstallationID: 7654321,
-		PrivateKeyPath: "/etc/srm/acme.pem",
-		DefaultGroupID: 7,
-		DefaultLabels:  []string{"self-hosted", "linux", "x64"},
-		InstallRoot:    "/opt/actions-runners",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("toOrgConfig() = %+v, want %+v", got, want)
-	}
-}
-
-func TestDefaultOrgFields(t *testing.T) {
-	f := defaultOrgFields()
-	if f.groupIDStr != "1" {
-		t.Errorf("default groupID = %q, want \"1\"", f.groupIDStr)
-	}
-	if f.installRoot != config.DefaultInstallRoot {
-		t.Errorf("default installRoot = %q, want %q", f.installRoot, config.DefaultInstallRoot)
-	}
-	if f.labelsStr == "" {
-		t.Error("default labels should be non-empty")
-	}
-}
-
 func TestSplitCSV(t *testing.T) {
 	cases := map[string][]string{
 		"a,b,c":         {"a", "b", "c"},

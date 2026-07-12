@@ -30,7 +30,7 @@ func TestRunnersSelectionSemantics(t *testing.T) {
 		t.Fatalf("deselect-all = %d, want 0", got)
 	}
 
-	v.tbl.SetCursor(0) // ra
+	v.st.setCursor(0) // ra
 	v.toggleSelect()
 	if got := len(v.selectedRunners()); got != 1 {
 		t.Fatalf("toggle one = %d, want 1", got)

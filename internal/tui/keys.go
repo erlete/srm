@@ -7,6 +7,8 @@ import "charm.land/bubbles/v2/key"
 type keyMap struct {
 	Up        key.Binding
 	Down      key.Binding
+	PageUp    key.Binding
+	PageDown  key.Binding
 	Tab       key.Binding
 	ShiftTab  key.Binding
 	Org       key.Binding
@@ -41,6 +43,8 @@ func newKeyMap() keyMap {
 	return keyMap{
 		Up:        key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 		Down:      key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+		PageUp:    key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "scroll up")),
+		PageDown:  key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdn", "scroll down")),
 		Tab:       key.NewBinding(key.WithKeys("tab", "l", "right"), key.WithHelp("tab", "next view")),
 		ShiftTab:  key.NewBinding(key.WithKeys("shift+tab", "h", "left"), key.WithHelp("shift+tab", "prev view")),
 		Org:       key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "filter orgs")),

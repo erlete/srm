@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	huh "charm.land/huh/v2"
 	lipgloss "charm.land/lipgloss/v2"
@@ -38,12 +39,23 @@ type toolProbe struct {
 }
 
 // healthHost is the host-wide doctor block - the single home for everything host-
-// related (capacity mode, aggregate slice, disks, caches, toolchain). It is the
-// right "Host information" panel on the Health tab; no host stats live elsewhere.
+// related (capacity mode, aggregate slice, disks, caches, toolchain, manifest drift,
+// rootless-DinD readiness). It is the right "Host information" panel on the Health
+// tab; no host stats live elsewhere.
 type healthHost struct {
 	CapacityMode string
 	Tools        []toolProbe
 	Stats        service.HostHealth
+
+	// Dependency-manifest drift (M3). ManifestSet is false when no host manifest is
+	// configured; ManifestOK is false when the drift probe errored (render "unknown").
+	ManifestSet     bool
+	ManifestMissing []string
+	ManifestOK      bool
+
+	// Rootless-DinD host readiness (M3); DinD.Enabled is false unless
+	// docker.rootlessDinD is on (or the host has no rootless-Docker analog).
+	DinD service.DinDReport
 }
 
 // healthView renders one bordered card per org, with an incremental text filter
@@ -54,8 +66,16 @@ type healthView struct {
 	reports []healthReport // filtered (mirrors the rendered cards)
 	host    healthHost
 	width   int
+	bodyH   int // total body-height budget (bounds the scrollable host panel)
 	cursor  int // selected org card (arrows move it; e/u act on it)
 	flt     filterState
+
+	// hostVP scrolls the "Host information" panel when its content (capacity, disks,
+	// caches, toolchain, manifest, rootless-DinD) is taller than the body. The wheel
+	// and PgUp/PgDn drive it; the frozen title stays above it. hostContentH is the
+	// content's rendered line count (drives the overflow scroll hint).
+	hostVP       viewport.Model
+	hostContentH int
 }
 
 // move advances the org-card cursor, clamped to the visible set.
@@ -86,18 +106,23 @@ func (v healthView) selected() (healthReport, bool) {
 }
 
 func newHealthView(t Theme) healthView {
-	return healthView{theme: t, flt: newFilterState("type to filter by org…")}
+	vp := viewport.New()
+	vp.MouseWheelEnabled = false // the Model routes the wheel to scrollHost
+	return healthView{theme: t, hostVP: vp, flt: newFilterState("type to filter by org…")}
 }
 
-func (v *healthView) setSize(w, _ int) {
+func (v *healthView) setSize(w, h int) {
 	v.width = w
+	v.bodyH = h
 	v.flt.setWidth(w - 4)
+	v.syncHost()
 }
 
 func (v *healthView) setReports(r []healthReport, host healthHost) {
 	v.all = r
 	v.host = host
 	v.applyFilter()
+	v.syncHost()
 }
 
 // applyFilter recomputes the visible org cards from the filter query.
@@ -190,10 +215,7 @@ func (v healthView) view() string {
 	}
 
 	// Right panel width ~ 42% of the body; left takes the rest.
-	rightW := v.width * 42 / 100
-	if rightW < 32 {
-		rightW = 32
-	}
+	rightW := v.rightWidth()
 	leftW := v.width - rightW - 3
 	if leftW < 28 {
 		leftW = 28
@@ -203,6 +225,15 @@ func (v healthView) view() string {
 	right := v.hostPanel(rightW)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
 	return head + body
+}
+
+// rightWidth is the "Host information" panel's outer width (the split view() uses).
+func (v healthView) rightWidth() int {
+	rightW := v.width * 42 / 100
+	if rightW < 32 {
+		rightW = 32
+	}
+	return rightW
 }
 
 // orgColumn renders the per-org doctor cards (auth, retention, agent freshness).
@@ -248,11 +279,27 @@ func (v healthView) orgColumn(w int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, cards...)
 }
 
-// hostPanel renders the single "Host information" panel: capacity mode, aggregate
-// slice, disk usage, cache sizes, and the toolchain probe.
+// hostPanel renders the single "Host information" panel: a frozen title (with an
+// overflow scroll hint) above a viewport over the host-wide stats. The panel body
+// never exceeds the screen - the viewport caps at the available height and the wheel
+// / PgUp / PgDn scroll it (see syncHost).
 func (v healthView) hostPanel(w int) string {
 	t := v.theme
-	lines := []string{t.PanelTtl.Render("Host information")}
+	title := t.PanelTtl.Render("Host information")
+	if hint := v.scrollHint(); hint != "" {
+		title += "  " + hint
+	}
+	inner := lipgloss.JoinVertical(lipgloss.Left, title, v.hostVP.View())
+	return t.Panel.Width(w - 2).Render(inner)
+}
+
+// hostContent composes every host-info line BELOW the title (capacity mode, aggregate
+// slice, disks, caches, toolchain, manifest drift, rootless-DinD readiness) into one
+// string. It carries no title and no border - the panel freezes the title above and
+// draws the border around the viewport. This is the scrollable region's content.
+func (v healthView) hostContent() string {
+	t := v.theme
+	var lines []string
 	if v.host.CapacityMode != "" {
 		lines = append(lines, t.StatusInfo.Render("capacity  ")+t.Crumb.Render(v.host.CapacityMode))
 	}
@@ -290,5 +337,125 @@ func (v healthView) hostPanel(w int) string {
 		}
 		lines = append(lines, "", t.Crumb.Render("toolchain"), "  "+strings.Join(toolParts, "   "))
 	}
-	return t.Panel.Width(w - 2).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+
+	lines = append(lines, v.manifestLines()...)
+	lines = append(lines, v.dindLines()...)
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+// syncHost rebuilds the host-panel viewport after a size or data change: it loads the
+// content, sets the width to the panel's inner text area, and caps the height so the
+// bordered panel fits the body. When the content fits, the viewport is exactly its
+// content height (the panel looks unchanged); when it overflows, it caps and scrolls.
+func (v *healthView) syncHost() {
+	content := v.hostContent()
+	v.hostContentH = lipgloss.Height(content)
+	v.hostVP.SetContent(content)
+
+	if w := v.rightWidth() - 4; w > 0 { // panel border(2) + horizontal padding(2)
+		v.hostVP.SetWidth(w)
+	}
+	// Available viewport height = body - filter-line reserve(1) - border(2) - title(1).
+	availH := v.bodyH - 4
+	if availH < 3 {
+		availH = 3
+	}
+	vpH := v.hostContentH
+	if vpH > availH {
+		vpH = availH
+	}
+	if vpH < 1 {
+		vpH = 1
+	}
+	v.hostVP.SetHeight(vpH)
+	v.setHostOffset(v.hostVP.YOffset()) // reclamp against the new content/height
+}
+
+// scrollHost scrolls the host panel by delta lines (negative = up); pageHost moves a
+// near-full page. Both clamp via setHostOffset.
+func (v *healthView) scrollHost(delta int) { v.setHostOffset(v.hostVP.YOffset() + delta) }
+func (v *healthView) pageHost(dir int)     { v.scrollHost(dir * v.hostVP.Height()) }
+
+// setHostOffset clamps the requested offset to [0, contentH-visibleH] and applies it.
+func (v *healthView) setHostOffset(off int) {
+	maxOff := v.hostContentH - v.hostVP.Height()
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	if off > maxOff {
+		off = maxOff
+	}
+	if off < 0 {
+		off = 0
+	}
+	v.hostVP.SetYOffset(off)
+}
+
+// scrollHint returns a faint "▲▼ N%" indicator when the host content overflows its
+// viewport (empty when everything fits). The arrows show which directions have more.
+func (v healthView) scrollHint() string {
+	if v.hostContentH <= v.hostVP.Height() {
+		return ""
+	}
+	off, maxOff := v.hostVP.YOffset(), v.hostContentH-v.hostVP.Height()
+	up, down := " ", " "
+	if off > 0 {
+		up = "▲"
+	}
+	if off < maxOff {
+		down = "▼"
+	}
+	pct := 0
+	if maxOff > 0 {
+		pct = off * 100 / maxOff
+	}
+	return v.theme.Faint.Render(fmt.Sprintf("%s%s %d%%", up, down, pct))
+}
+
+// manifestLines renders the dependency-manifest drift status (M3): nothing when no
+// host manifest is configured, else satisfied / N-missing / unknown, listing the
+// first few missing items. "P to provision" points at the host provision op.
+func (v healthView) manifestLines() []string {
+	if !v.host.ManifestSet {
+		return nil
+	}
+	t := v.theme
+	switch {
+	case !v.host.ManifestOK:
+		return []string{"", t.Crumb.Render("manifest") + "  " + t.Faint.Render("drift unknown (probe failed)")}
+	case len(v.host.ManifestMissing) == 0:
+		return []string{"", t.Crumb.Render("manifest") + "  " + t.Online.Render("satisfied")}
+	}
+	out := []string{"", t.Crumb.Render("manifest") + "  " + t.Busy.Render(fmt.Sprintf("%d missing (P to provision)", len(v.host.ManifestMissing)))}
+	const showMax = 4
+	for i, item := range v.host.ManifestMissing {
+		if i == showMax {
+			out = append(out, t.Faint.Render(fmt.Sprintf("  … and %d more", len(v.host.ManifestMissing)-showMax)))
+			break
+		}
+		out = append(out, t.Faint.Render("  - "+item))
+	}
+	return out
+}
+
+// dindLines renders rootless-Docker host readiness (M3): nothing unless
+// docker.rootlessDinD is on. Passing checks are terse (✓ name); failures also show
+// the remediation detail. A cross-org caveat leads when perOrgUsers is off with >1 org.
+func (v healthView) dindLines() []string {
+	if !v.host.DinD.Enabled {
+		return nil
+	}
+	t := v.theme
+	out := []string{"", t.Crumb.Render("rootless docker")}
+	if v.host.DinD.CrossOrgRisk {
+		out = append(out, t.Busy.Render("  ! perOrgUsers off with >1 org - no cross-org boundary"))
+	}
+	for _, c := range v.host.DinD.Checks {
+		if c.OK {
+			out = append(out, "  "+t.Online.Render("✓ "+c.Name))
+		} else {
+			out = append(out, "  "+t.Offline.Render("✗ "+c.Name)+"  "+t.Faint.Render(c.Detail))
+		}
+	}
+	return out
 }

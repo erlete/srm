@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -20,6 +21,48 @@ func (m *Manager) BackupConfig() (string, error) {
 	dir := filepath.Dir(m.cfgPath)
 	out := filepath.Join(dir, fmt.Sprintf("srm-backup-%d.tar.gz", time.Now().Unix()))
 	return BackupConfigDir(dir, out)
+}
+
+// BackupInfo describes one restorable config-dir archive.
+type BackupInfo struct {
+	Path    string
+	Name    string
+	Size    int64
+	ModTime time.Time
+}
+
+// ListBackups finds srm config-dir backup archives ("srm-backup-*.tar.gz" and
+// "srm-config-*.tar.gz" - the names BackupConfig and the pre-purge backup write) in
+// dir, newest first. A missing dir yields an empty list, not an error, so the restore
+// picker degrades to "no backups found" rather than failing.
+func ListBackups(dir string) ([]BackupInfo, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []BackupInfo
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".tar.gz") || !(strings.HasPrefix(name, "srm-backup-") || strings.HasPrefix(name, "srm-config-")) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		out = append(out, BackupInfo{Path: filepath.Join(dir, name), Name: name, Size: info.Size(), ModTime: info.ModTime()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ModTime.After(out[j].ModTime) })
+	return out, nil
 }
 
 // BackupConfigDir writes a gzip-compressed tar of every regular file directly

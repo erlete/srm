@@ -49,14 +49,20 @@ func upgradeApplyOp(opts service.UpgradeOpts, title string) opSpec {
 // planUpgradeCmd runs a dry-run upgrade pass and builds the preview + apply op.
 // only (non-empty) scopes the upgrade to a runner selection; when empty the
 // upgrade sweeps every local runner in scope, so its Apply is gated behind a
-// typed hostname confirm (LOCKED spec decision #5).
-func planUpgradeCmd(ctx context.Context, mgr *service.Manager, org string, only map[string]bool, t Theme) tea.Cmd {
+// typed hostname confirm (LOCKED spec decision #5). toVersion (M1) pins an explicit
+// agent version ("" = the configured pin, else GitHub-current) and force re-installs
+// at the same version / allows a downgrade; both are threaded into the dry-run AND
+// the Apply so the preview reflects exactly what Apply will do.
+func planUpgradeCmd(ctx context.Context, mgr *service.Manager, org string, only map[string]bool, toVersion string, force bool, t Theme) tea.Cmd {
 	return func() tea.Msg {
-		results, errs := mgr.UpgradeLocalRunners(ctx, service.UpgradeOpts{OrgFilter: org, Only: only, DryRun: true})
+		opts := service.UpgradeOpts{OrgFilter: org, Only: only, ToVersion: toVersion, Force: force}
+		dryOpts := opts
+		dryOpts.DryRun = true
+		results, errs := mgr.UpgradeLocalRunners(ctx, dryOpts)
 		if e := firstErr(errs); e != nil {
 			return previewMsg{err: e}
 		}
-		apply := upgradeApplyOp(service.UpgradeOpts{OrgFilter: org, Only: only}, "Upgrade agent")
+		apply := upgradeApplyOp(opts, "Upgrade agent")
 		note := scopeNote(org) + " · serial · self-test + rollback per runner"
 		token := ""
 		if len(only) > 0 {
@@ -70,6 +76,12 @@ func planUpgradeCmd(ctx context.Context, mgr *service.Manager, org string, only 
 			} else {
 				token = "CONFIRM"
 			}
+		}
+		if toVersion != "" {
+			note += " · target " + toVersion
+		}
+		if force {
+			note += " · force (reinstall/allow downgrade)"
 		}
 		return previewMsg{
 			title:      "Upgrade agent (preview)",

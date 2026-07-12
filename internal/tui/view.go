@@ -148,6 +148,33 @@ func (m Model) bodyView(h int) string {
 		))
 		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
 	}
+	if m.upgradeForm != nil {
+		box := m.theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left,
+			m.theme.ModalT.Render("Upgrade options"),
+			"",
+			m.upgradeForm.form.View(),
+		))
+		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
+	}
+	if m.uninstallForm != nil {
+		box := m.theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left,
+			m.theme.ModalT.Render("Uninstall options"),
+			"",
+			m.uninstallForm.form.View(),
+		))
+		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
+	}
+	if m.onboardForm != nil {
+		box := m.theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left,
+			m.theme.ModalT.Render("Onboard a new org"),
+			"",
+			m.onboardForm.form.View(),
+		))
+		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
+	}
+	if m.restoreOpen {
+		return m.restore.view(m.width, h)
+	}
 	if m.orgPickOpen {
 		return m.orgPick.view(m.width, h)
 	}
@@ -241,7 +268,7 @@ func (m Model) contextHelp() string {
 	global := "  ·  o orgs · tab views · a auto · ? help · q quit"
 	switch m.tab {
 	case tabHealth:
-		return "↑/↓ org · i info · e retention · u upgrade · P provision · r refresh" + global
+		return "↑/↓ org · PgUp/PgDn scroll host · i info · e retention · u upgrade · P provision · r refresh" + global
 	case tabPersistent:
 		return "↑/↓ move · space select · A all · i info · n new · e group · d destroy · u upgrade · b rollback · R refresh · c recreate · / filter" + global
 	case tabEphemeral:

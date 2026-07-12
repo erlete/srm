@@ -78,7 +78,7 @@ func (t Theme) yamlBox(lines []string) string {
 		t.Panel.Render(strings.Join(lines, "\n"))
 }
 
-func runnerInfo(t Theme, r service.FusedRunner, job *core.RunnerJob, jobState string) (string, string) {
+func runnerInfo(t Theme, r service.FusedRunner, memHist []int64, job *core.RunnerJob, jobState string) (string, string) {
 	title := r.Runner.Name + "  ·  " + r.Org
 
 	status := "offline"
@@ -126,10 +126,7 @@ func runnerInfo(t Theme, r service.FusedRunner, job *core.RunnerJob, jobState st
 			{"template", templateLabel(r.TemplateVersion)},
 		}),
 		kvSection(t, "Drift", [][2]string{{"class", drift}}),
-		kvSection(t, "Memory", [][2]string{
-			{"cgroup", mem},
-			{"oom", oomLabel(r.OOMKills)},
-		}),
+		kvSection(t, "Memory", memSection(t, mem, r.OOMKills, memHist, r.MemMax)),
 		kvSection(t, "Timeline", [][2]string{
 			{"created", niceTime(r.ConfiguredAt)},
 			{"upgraded", niceTime(r.LastUpgradeAt)},
@@ -142,6 +139,41 @@ func runnerInfo(t Theme, r service.FusedRunner, job *core.RunnerJob, jobState st
 		currentJobBlock(t, r.Runner.Busy, job, jobState),
 	}
 	return title, strings.Join(blocks, "\n\n")
+}
+
+// memSection builds the Memory section rows: the cgroup live/peak/cap line, the OOM
+// count, and - when enough history has accumulated - a "trend" sparkline of recent
+// live-memory samples (one captured per fleet refresh), captioned so the count is
+// self-explanatory. kvSection drops the sparkline row automatically when it is empty.
+func memSection(t Theme, cgroup string, ooms int64, hist []int64, memMax int64) [][2]string {
+	kv := [][2]string{
+		{"cgroup", cgroup},
+		{"oom", oomLabel(ooms)},
+	}
+	if spark := memSparkRow(t, hist, memMax); spark != "" {
+		caption := t.Faint.Render(fmt.Sprintf("  last %d samples (one per refresh)", len(hist)))
+		kv = append(kv, [2]string{"trend", spark + caption})
+	}
+	return kv
+}
+
+// memSparkRow renders the memory-history sparkline colored by the latest sample's
+// utilization band (reusing bar's green/amber/red thresholds), or "" when there are
+// fewer than two samples - a single point has no trend to draw.
+func memSparkRow(t Theme, hist []int64, memMax int64) string {
+	if len(hist) < 2 {
+		return ""
+	}
+	style := t.Online
+	if memMax > 0 {
+		switch frac := float64(hist[len(hist)-1]) / float64(memMax); {
+		case frac > 0.90:
+			style = t.Offline
+		case frac >= 0.70:
+			style = t.Busy
+		}
+	}
+	return style.Render(sparkline(hist, memMax))
 }
 
 // currentJobBlock renders the "Current job" section from an async lookup. jobState
@@ -220,7 +252,7 @@ func healthInfo(t Theme, rep healthReport, host healthHost) (string, string) {
 	return title, strings.Join(blocks, "\n\n")
 }
 
-func slotInfo(t Theme, s service.FusedSlot) (string, string) {
+func slotInfo(t Theme, s service.FusedSlot, memHist []int64) (string, string) {
 	title := "slot " + s.Slot + "  ·  " + s.Org
 	label, _ := slotState(s.EphemeralSlot)
 
@@ -235,10 +267,7 @@ func slotInfo(t Theme, s service.FusedSlot) (string, string) {
 			{"installed", orQ(s.AgentVersion)},
 			{"published", orQ(s.Published)},
 		}),
-		kvSection(t, "Memory", [][2]string{
-			{"cgroup", mem},
-			{"oom", oomLabel(s.OOMKills)},
-		}),
+		kvSection(t, "Memory", memSection(t, mem, s.OOMKills, memHist, s.MemMax)),
 		kvSection(t, "Targeting", [][2]string{
 			{"group", groupCell(s.GroupName, s.GroupID)},
 			{"labels", strings.Join(s.Labels, ", ")},

@@ -30,11 +30,17 @@ func backupOp() opSpec {
 }
 
 // uninstallPreviewCmd runs a dry-run uninstall and builds the blast-radius preview
-// plus the apply op, gated behind a typed hostname confirm. opts.Org scopes it
-// (current org filter; "" = full host).
-func uninstallPreviewCmd(ctx context.Context, mgr *service.Manager, t Theme, org string) tea.Cmd {
+// plus the apply op, gated behind a typed hostname confirm. opts carries the scope
+// and the Keep*/Force/Purge toggles from the Step-1 form. When the opts would remove
+// /etc/srm it escalates: a writable-backup pre-check refuses up front, and Apply
+// chains a second "PURGE" typed-confirm after the hostname one.
+func uninstallPreviewCmd(ctx context.Context, mgr *service.Manager, t Theme, opts service.UninstallOpts) tea.Cmd {
 	return func() tea.Msg {
-		opts := service.UninstallOpts{Org: org}
+		// Gate 3 (up front): a purge that removes /etc/srm must have a writable backup
+		// dir, else the real teardown would abort mid-way to protect the App keys.
+		if err := mgr.EnsureBackupDirWritable(opts); err != nil {
+			return previewMsg{err: err}
+		}
 		rep, err := mgr.UninstallPreview(ctx, opts)
 		if err != nil {
 			return previewMsg{err: err}
@@ -58,15 +64,22 @@ func uninstallPreviewCmd(ctx context.Context, mgr *service.Manager, t Theme, org
 			},
 		}
 		scope := "FULL HOST"
-		if org != "" {
-			scope = "org " + org
+		if opts.Org != "" {
+			scope = "org " + opts.Org
+		}
+		note := "GitHub-side runners are deregistered unless you kept them"
+		token2 := ""
+		if opts.PurgeRemovesConfig() {
+			note = "PURGE: /etc/srm (config + App keys) is backed up, then DELETED · double-confirm required"
+			token2 = "PURGE"
 		}
 		return previewMsg{
-			title:      "Uninstall blast radius (" + scope + ")",
-			note:       "config is backed up before any purge · GitHub-side runners are deregistered",
-			lines:      uninstallBlastLines(t, rep),
-			spec:       apply,
-			typedToken: host,
+			title:       "Uninstall blast radius (" + scope + ")",
+			note:        note,
+			lines:       uninstallBlastLines(t, rep),
+			spec:        apply,
+			typedToken:  host,
+			typedToken2: token2,
 		}
 	}
 }

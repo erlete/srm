@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"sort"
+	"time"
 
 	"github.com/erlete/srm/internal/config"
 	"github.com/erlete/srm/internal/runner"
@@ -107,6 +108,7 @@ type FleetSnapshot struct {
 	Host              HostHealth
 	PartialErrs       map[string]error // per-org list failures (one bad org never sinks the view)
 	HostTierAvailable bool             // a reconcile pass succeeded and was merged
+	HostTierAt        time.Time        // when that reconcile (drift audit) pass ran (zero until merged)
 }
 
 // FleetFast builds the always-available tier: GitHub list + manifest versions +
@@ -228,7 +230,7 @@ func (m *Manager) FleetFast(ctx context.Context, orgFilter string) FleetSnapshot
 // Runners absent from the report keep their unaudited state. Pure (no I/O) so the
 // fusion is unit-testable; the caller runs Reconcile off the event loop and merges
 // here only on success.
-func MergeHostTier(snap FleetSnapshot, rep ReconcileReport) FleetSnapshot {
+func MergeHostTier(snap FleetSnapshot, rep ReconcileReport, at time.Time) FleetSnapshot {
 	byKey := make(map[string]RunnerState, len(rep.Runners))
 	for _, st := range rep.Runners {
 		byKey[st.Org+"\x00"+st.Name] = st
@@ -252,6 +254,7 @@ func MergeHostTier(snap FleetSnapshot, rep ReconcileReport) FleetSnapshot {
 		Disks: rep.Disks, Caches: rep.Caches, Loaded: true,
 	}
 	snap.HostTierAvailable = true
+	snap.HostTierAt = at
 	return snap
 }
 
