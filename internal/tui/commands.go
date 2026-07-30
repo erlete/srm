@@ -205,6 +205,33 @@ func saveManifestCmd(mgr *service.Manager, man core.DependencyManifest) tea.Cmd 
 	}
 }
 
+// saveProfileCmd persists a create-preset edit: delete when del is set, else
+// create-or-replace. On replace it OVERLAYS the edited public fields onto any
+// existing profile of that name, so metadata the form doesn't edit (the per-profile
+// dependency manifest, RequireJobContainer) survives rather than being wiped.
+func saveProfileCmd(mgr *service.Manager, org string, p core.RunnerProfile, del bool) tea.Cmd {
+	return func() tea.Msg {
+		if del {
+			if err := mgr.RemoveProfile(org, p.Name); err != nil {
+				return actionMsg{err: err}
+			}
+			return actionMsg{summary: "removed profile " + p.Name + " → " + mgr.ConfigPath()}
+		}
+		merged := p
+		if existing, ok := mgr.Profile(org, p.Name); ok {
+			merged = existing
+			merged.Labels = p.Labels
+			merged.GroupID = p.GroupID
+			merged.Ephemeral = p.Ephemeral
+			merged.DefaultContainerImage = p.DefaultContainerImage
+		}
+		if err := mgr.UpsertProfile(org, merged); err != nil {
+			return actionMsg{err: err}
+		}
+		return actionMsg{summary: "saved profile " + p.Name + " → " + mgr.ConfigPath()}
+	}
+}
+
 // progressMsg carries one runner-creation event to the progress bar.
 type progressMsg struct{ ev core.ProgressEvent }
 

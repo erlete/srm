@@ -88,7 +88,10 @@ func renderReconcile(rep service.ReconcileReport) error {
 	if len(drift) > 0 {
 		fmt.Println("\nDRIFT")
 		for _, r := range drift {
-			line := fmt.Sprintf("  %-14s %s/%s - %s", r.Class, r.Org, r.Name, r.Detail)
+			// The leading STATE word is the canonical service.ClassLabel - the SAME
+			// vocab the TUI Drift tab shows (item 6 #5); the precise class id lives in
+			// the RUNNER STATE census above, the specific reason in the detail.
+			line := fmt.Sprintf("  %-8s %s/%s - %s", service.ClassLabel(r.Class), r.Org, r.Name, r.Detail)
 			if r.Fix != "" {
 				line += "  [" + r.Fix + "]"
 			}

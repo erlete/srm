@@ -67,8 +67,12 @@ func planReapCmd(ctx context.Context, mgr *service.Manager, org string, t Theme)
 				return reapResultItems(rep), nil
 			},
 		}
-		note := scopeNote(org) + " · DEREGISTERS these offline ephemeral registrations from GitHub"
-		return previewMsg{title: "Reap ephemeral ghosts (preview)", note: note, lines: lines, spec: apply}
+		n := len(rep.Reaped)
+		note := scopeNote(org) + fmt.Sprintf(" · %d GitHub ghost(s), fleet-wide · DEREGISTERS offline ephemeral registrations from GitHub (NOT the runners shown in the Drift table)", n)
+		if n == 0 {
+			note = scopeNote(org) + " · no offline ephemeral ghosts to reap"
+		}
+		return previewMsg{title: "Reap GitHub ghosts (preview)", note: note, lines: lines, spec: apply}
 	}
 }
 

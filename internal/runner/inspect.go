@@ -31,16 +31,17 @@ type Inspection struct {
 // crash-looping) - never by whether a JIT registration currently exists on
 // GitHub, because that churns every job.
 type EphemeralInspection struct {
-	UnitExists   bool  // a systemd unit file exists for this slot
-	Active       bool  // the lane is active (between or during a job)
-	Restarts     int   // systemd NRestarts; a high count means the cycle is crash-looping
-	UnitOK       bool  // the on-disk unit matches the expected (renderEphemeralUnit) content AND template generation
-	UnitVer      int   // the on-disk unit's "# srm-ephemeral-vN" marker (0 = absent / pre-versioning)
-	UnitNewer    bool  // the on-disk unit carries a NEWER template generation than this binary (authoritative-skip)
-	MemPeakBytes int64 // cgroup memory peak, or -1 if unknown
-	MemMaxBytes  int64 // cgroup memory hard cap, or -1 = unlimited/unknown
-	MemCurBytes  int64 // cgroup live memory (MemoryCurrent), or -1 if unknown
-	OOMKills     int64 // cgroup memory.events oom_kill count over the lane's life, or -1
+	UnitExists   bool   // a systemd unit file exists for this slot
+	Active       bool   // the lane is active (between or during a job)
+	Restarts     int    // systemd NRestarts; climbs once per churned job (NOT a crash-loop signal)
+	LastResult   string // systemd Result of the last cycle: "success" = clean churn, else a failure (the crash-loop signal); "" = unknown
+	UnitOK       bool   // the on-disk unit matches the expected (renderEphemeralUnit) content AND template generation
+	UnitVer      int    // the on-disk unit's "# srm-ephemeral-vN" marker (0 = absent / pre-versioning)
+	UnitNewer    bool   // the on-disk unit carries a NEWER template generation than this binary (authoritative-skip)
+	MemPeakBytes int64  // cgroup memory peak, or -1 if unknown
+	MemMaxBytes  int64  // cgroup memory hard cap, or -1 = unlimited/unknown
+	MemCurBytes  int64  // cgroup live memory (MemoryCurrent), or -1 if unknown
+	OOMKills     int64  // cgroup memory.events oom_kill count over the lane's life, or -1
 }
 
 // DiskStat is a filesystem usage snapshot for one path.
@@ -100,6 +101,10 @@ func (u *ubuntu) InspectEphemeral(ctx context.Context, org, slot string) Ephemer
 	if n, err := strconv.Atoi(systemctlValue(ctx, svc, "NRestarts")); err == nil {
 		insp.Restarts = n
 	}
+	// systemd Result of the last run: "success" while the lane cleanly churns jobs,
+	// a failure token (exit-code / signal / oom-kill / ...) when a cycle is actually
+	// broken. This - not the cumulative restart count - is the crash-loop signal.
+	insp.LastResult = systemctlValue(ctx, svc, "Result")
 	// Drop-in conformance: the on-disk unit vs what we would write now (cache env,
 	// caps, hardening, ExecStart). A mismatch is drift to report (e.g. caps changed).
 	if b, err := os.ReadFile(filepath.Join("/etc/systemd/system", svc)); err == nil {

@@ -24,15 +24,72 @@ const (
 
 	// Ephemeral slot lanes are a SEPARATE family judged by host health alone - never
 	// by GitHub registration presence, which churns every job. A healthy lane is
-	// normal (not drift); a down/crash-looping lane is reported.
-	ClassEphemeralSlot  = "ephemeral"       // active lane, not crash-looping → healthy
-	ClassEphemeralStuck = "ephemeral-stuck" // lane inactive or crash-looping → report
+	// normal (not drift); a down/crash-looping/drifted lane is reported. The specific
+	// reason is the ephemeral sub-state (see EphemeralSlotState).
+	ClassEphemeralSlot  = "ephemeral"       // up + conformant → healthy
+	ClassEphemeralStuck = "ephemeral-stuck" // down, crash-looping, or unit-drifted → report
 	ClassEphemeralNewer = "ephemeral-newer" // on-disk lane unit is a NEWER template generation than this srm → authoritative-skip
 )
 
-// EphemeralRestartThreshold is the systemd NRestarts count above which an
-// ephemeral slot is treated as crash-looping rather than healthily churning jobs.
-const EphemeralRestartThreshold = 5
+// Ephemeral sub-state vocab: WHY a lane is (un)healthy. All the unhealthy ones map
+// to ClassEphemeralStuck for reconcile's fix path, but this is the CANONICAL label
+// the Ephemeral tab, the Drift tab, and reconcile's detail all share, so the same
+// lane is never called "down" in one surface and "stuck" in another (item 6 #4/#14).
+const (
+	EphemeralActive    = "active"     // up with a conformant unit
+	EphemeralDown      = "down"       // not active (stopped / idle / cleanly exited between jobs)
+	EphemeralCrashLoop = "crash-loop" // not active AND the last cycle exited abnormally
+	EphemeralUnitDrift = "unit-drift" // unit config drifted from expected (recreate to apply)
+)
+
+// EphemeralSlotState is the SINGLE source of an ephemeral lane's health label,
+// shared by reconcile (classifyEphemeral) and the TUI. active/unitOK come from the
+// host inspection; lastResult is systemd's Result of the last cycle ("" when
+// unknown, e.g. Windows). A lane is healthy while it is up with a conformant unit -
+// its restart COUNT is deliberately IGNORED: Restart=always churns one restart per
+// job, so a busy healthy lane accrues a high NRestarts, and the old absolute-count
+// threshold false-flagged that ordinary churn as crash-looping (item 6 #4).
+func EphemeralSlotState(active, unitOK bool, lastResult string) (label string, healthy bool) {
+	switch {
+	case active && unitOK:
+		return EphemeralActive, true
+	case !unitOK:
+		return EphemeralUnitDrift, false
+	case lastResult != "" && lastResult != "success":
+		return EphemeralCrashLoop, false
+	default:
+		return EphemeralDown, false
+	}
+}
+
+// ClassLabel is the canonical short, human label for a drift class - the single
+// vocab shared by `srm reconcile` and the TUI badges, so a class is never called
+// "orphan-unit" in one surface and "orphan" in another (item 6 #5). Unknown classes
+// echo back verbatim. Presentation (glyph, color) stays with each surface.
+func ClassLabel(class string) string {
+	switch class {
+	case ClassHealthy, ClassEphemeralSlot:
+		return "ok"
+	case ClassStaleDropIn:
+		return "stale"
+	case ClassDropInNewer, ClassEphemeralNewer:
+		return "newer"
+	case ClassStuck, ClassEphemeralStuck:
+		return "stuck"
+	case ClassOrphanUnit:
+		return "orphan"
+	case ClassOrphanGitHub:
+		return "ghost"
+	case ClassLegacyFlat:
+		return "legacy"
+	case ClassUnknown:
+		return "unknown"
+	case "":
+		return "unaudited"
+	default:
+		return class
+	}
+}
 
 // RunnerState is reconcile's verdict for one runner.
 type RunnerState struct {
@@ -324,21 +381,32 @@ func classifyPersistent(insp runner.Inspection, onGitHub, orgListedOK, online bo
 }
 
 // classifyEphemeral maps an ephemeral slot's host-only inspected state to a class.
-// Pure and order-sensitive (unit-tested): UnitNewer is evaluated before the
-// stuck/drift cases so an older binary authoritative-skips a newer host's lane unit
-// rather than reporting it as drift-to-recreate (mirrors classifyPersistent).
+// UnitNewer is evaluated FIRST so an older binary authoritative-skips a newer host's
+// lane unit rather than reporting it as drift-to-recreate (mirrors classifyPersistent;
+// a newer generation also fails UnitOK, so EphemeralSlotState would otherwise call it
+// unit-drift). The sub-state (healthy / down / crash-loop / unit-drift) is the shared
+// EphemeralSlotState so the class detail and the TUI can never diverge.
 func classifyEphemeral(insp runner.EphemeralInspection) (class, detail string) {
-	switch {
-	case insp.Active && insp.Restarts < EphemeralRestartThreshold && insp.UnitOK:
-		return ClassEphemeralSlot, "ephemeral slot healthy"
-	case insp.UnitNewer:
+	if insp.UnitNewer {
 		return ClassEphemeralNewer, fmt.Sprintf("ephemeral unit template v%d is newer than this srm (v%d) - update the binary", insp.UnitVer, runner.CurrentEphemeralVersion)
-	case !insp.Active:
-		return ClassEphemeralStuck, "ephemeral slot inactive"
-	case !insp.UnitOK:
-		return ClassEphemeralStuck, "ephemeral unit drifted from expected (recreate to apply)"
-	default:
-		return ClassEphemeralStuck, fmt.Sprintf("ephemeral slot crash-looping (%d restarts)", insp.Restarts)
+	}
+	label, healthy := EphemeralSlotState(insp.Active, insp.UnitOK, insp.LastResult)
+	if healthy {
+		return ClassEphemeralSlot, "ephemeral slot healthy"
+	}
+	return ClassEphemeralStuck, ephemeralDetail(label, insp)
+}
+
+// ephemeralDetail expands an unhealthy ephemeral sub-state label into reconcile's
+// human detail string.
+func ephemeralDetail(label string, insp runner.EphemeralInspection) string {
+	switch label {
+	case EphemeralUnitDrift:
+		return "ephemeral unit drifted from expected (recreate to apply)"
+	case EphemeralCrashLoop:
+		return fmt.Sprintf("ephemeral slot crash-looping (last cycle exited: %s)", insp.LastResult)
+	default: // down
+		return "ephemeral slot inactive"
 	}
 }
 

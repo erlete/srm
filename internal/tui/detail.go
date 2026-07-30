@@ -9,30 +9,33 @@ import (
 )
 
 // driftGlyph maps a reconcile drift class to a one-glyph badge + short label for
-// the DRIFT column and inline badges. An empty class is "unaudited" (the host tier
-// has not loaded) - never asserted healthy. This is the single drift->badge map.
+// the DRIFT column and inline badges. The label is the canonical service.ClassLabel
+// (the SINGLE vocab shared with the CLI, item 6 #5); only the glyph - pure terminal
+// presentation - lives here. An empty class is "unaudited" (the host tier has not
+// loaded) - never asserted healthy.
 func driftGlyph(class string) (glyph, label string) {
+	return driftClassGlyph(class), service.ClassLabel(class)
+}
+
+// driftClassGlyph is the per-class badge glyph (presentation only).
+func driftClassGlyph(class string) string {
 	switch class {
 	case service.ClassHealthy, service.ClassEphemeralSlot:
-		return "●", "ok"
-	case service.ClassStaleDropIn:
-		return "⚠", "stale"
+		return "●"
+	case service.ClassStaleDropIn, service.ClassOrphanUnit, service.ClassLegacyFlat:
+		return "⚠"
 	case service.ClassDropInNewer, service.ClassEphemeralNewer:
-		return "↑", "newer"
+		return "↑"
 	case service.ClassStuck, service.ClassEphemeralStuck:
-		return "▲", "stuck"
-	case service.ClassOrphanUnit:
-		return "⚠", "orphan"
+		return "▲"
 	case service.ClassOrphanGitHub:
-		return "○", "ghost"
-	case service.ClassLegacyFlat:
-		return "⚠", "legacy"
+		return "○"
 	case service.ClassUnknown:
-		return "?", "unknown"
+		return "?"
 	case "":
-		return "·", "unaudited"
+		return "·"
 	default:
-		return "·", class
+		return "·"
 	}
 }
 

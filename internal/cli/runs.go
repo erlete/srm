@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -21,8 +22,47 @@ func newRunsCmd() *cobra.Command {
 		Use:   "runs",
 		Short: "List captured ephemeral job runs and view their durable logs",
 	}
-	c.AddCommand(newRunsListCmd(), newRunsLogsCmd())
+	c.AddCommand(newRunsListCmd(), newRunsActiveCmd(), newRunsLogsCmd())
 	return c
+}
+
+// newRunsActiveCmd shows the jobs the fleet's BUSY runners are executing right now,
+// joined live from GitHub (repo / workflow / job). It is the "active now" half of the
+// Runs view - the durable joblog store (`srm runs list`) is the history half. Unlike
+// the store commands this one talks to GitHub, so it works from any box with the App
+// creds (not only elevated on the host).
+func newRunsActiveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "active",
+		Short: "Show the jobs busy runners are running right now - repo / workflow, live from GitHub (--org)",
+		RunE: func(_ *cobra.Command, _ []string) error {
+			mgr, closeLog, err := buildManager()
+			if err != nil {
+				return err
+			}
+			defer closeLog()
+			if err := requireOrgs(mgr); err != nil {
+				return err
+			}
+			runs, err := mgr.ActiveRuns(context.Background(), flagOrg)
+			if err != nil {
+				return err
+			}
+			if len(runs) == 0 {
+				fmt.Println("no active jobs (no busy runner has a resolvable job right now)")
+				return nil
+			}
+			fmt.Printf("%-16s %-8s %-30s %-24s %-20s %s\n", "ORG", "SLOT", "RUNNER", "REPO", "WORKFLOW", "JOB")
+			for _, r := range runs {
+				slot := "-"
+				if r.Ephemeral {
+					slot = "eph " + r.Slot
+				}
+				fmt.Printf("%-16s %-8s %-30s %-24s %-20s %s\n", r.Org, slot, r.RunnerName, r.Job.Repo, r.Job.Workflow, r.Job.JobName)
+			}
+			return nil
+		},
+	}
 }
 
 func newRunsListCmd() *cobra.Command {

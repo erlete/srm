@@ -12,7 +12,7 @@ import (
 func newGroupsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "groups",
-		Short: "List and create runner groups",
+		Short: "List, create, and manage repo access for runner groups",
 	}
 	cmd.AddCommand(newGroupsListCmd(), newGroupsCreateCmd(), newGroupsReposCmd())
 	return cmd
@@ -94,7 +94,7 @@ func newGroupsListCmd() *cobra.Command {
 			fmt.Printf("%-16s %-6s %-24s %-11s %-8s %s\n", "ORG", "ID", "NAME", "VISIBILITY", "DEFAULT", "PUBLIC")
 			for _, row := range rows {
 				g := row.Group
-				fmt.Printf("%-16s %-6d %-24s %-11s %-8v %v\n", row.Org, g.ID, g.Name, g.Visibility, g.Default, g.AllowsPublic)
+				fmt.Printf("%-16s %-6d %-24s %-11s %-8s %s\n", row.Org, g.ID, g.Name, g.Visibility, yesNo(g.Default), yesNo(g.AllowsPublic))
 			}
 			return nil
 		},

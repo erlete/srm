@@ -17,7 +17,7 @@ import (
 func newRunnersCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "runners",
-		Short: "Create, list, and delete self-hosted runners",
+		Short: "Create, list, refresh, upgrade, destroy self-hosted runners + view their logs",
 	}
 	cmd.AddCommand(newRunnersListCmd(), newRunnersCreateCmd(), newRunnersDeleteCmd(), newRunnersDestroyCmd(), newRunnersRefreshCmd(), newRunnersUpgradeCmd(), newRunnersLogsCmd())
 	return cmd
@@ -226,6 +226,14 @@ func orUnknownCLI(v string) string {
 	return v
 }
 
+// natureWord names a profile's runner nature for error messages.
+func natureWord(ephemeral bool) string {
+	if ephemeral {
+		return "ephemeral"
+	}
+	return "persistent"
+}
+
 func newRunnersCreateCmd() *cobra.Command {
 	var (
 		count      int
@@ -233,11 +241,12 @@ func newRunnersCreateCmd() *cobra.Command {
 		labels     string
 		group      string
 		ephemeral  bool
+		profile    string
 	)
 	c := &cobra.Command{
 		Use:   "create",
 		Short: "Provision self-hosted runners on THIS host - persistent, or --ephemeral JIT slots (run elevated on the target)",
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			mgr, closeLog, err := buildManager()
 			if err != nil {
 				return err
@@ -251,13 +260,28 @@ func newRunnersCreateCmd() *cobra.Command {
 				return err
 			}
 
+			// A named profile decides the nature (persistent vs ephemeral) and seeds
+			// labels/group; explicit flags still win over the profile's values (the
+			// service's applyProfileDefaults only fills what is empty). A --ephemeral
+			// that contradicts the profile's nature is a hard error, not a silent switch.
+			if profile != "" {
+				p, ok := mgr.Profile(org, profile)
+				if !ok {
+					return fmt.Errorf("profile %q not found for org %s", profile, org)
+				}
+				if cmd.Flags().Changed("ephemeral") && ephemeral != p.Ephemeral {
+					return fmt.Errorf("--ephemeral=%v conflicts with profile %q (which is %s)", ephemeral, profile, natureWord(p.Ephemeral))
+				}
+				ephemeral = p.Ephemeral
+			}
+
 			// Ephemeral slots are numbered lanes (1..N) that mint a fresh JIT
 			// registration per job - no name prefix, distinct from persistent runners.
 			if ephemeral {
 				if namePrefix != "" {
 					return fmt.Errorf("--name-prefix is not used with --ephemeral (slots are numbered 1..N)")
 				}
-				spec := service.DeploySpec{Org: org, Count: count, Labels: splitCSV(labels), Group: group}
+				spec := service.DeploySpec{Org: org, Count: count, Labels: splitCSV(labels), Group: group, Profile: profile}
 				slots, err := mgr.CreateEphemeralRunners(context.Background(), spec, nil)
 				for _, s := range slots {
 					fmt.Printf("ok   ephemeral slot %s\n", s)
@@ -278,6 +302,7 @@ func newRunnersCreateCmd() *cobra.Command {
 				NamePrefix: namePrefix,
 				Labels:     splitCSV(labels),
 				Group:      group,
+				Profile:    profile,
 			}
 			names, err := mgr.CreateRunners(context.Background(), spec, nil)
 			for _, n := range names {
@@ -295,6 +320,7 @@ func newRunnersCreateCmd() *cobra.Command {
 	c.Flags().StringVar(&labels, "labels", "", "comma-separated custom labels (tags)")
 	c.Flags().StringVar(&group, "group", "", "runner group name (created if missing)")
 	c.Flags().BoolVar(&ephemeral, "ephemeral", false, "create ephemeral JIT slots (one job per registration, clean slate) instead of persistent runners")
+	c.Flags().StringVar(&profile, "profile", "", "named org create-preset (see `srm config profiles`); sets nature + seeds labels/group")
 	return c
 }
 
@@ -392,7 +418,7 @@ func newRunnersListCmd() *cobra.Command {
 // printRunnerRows renders runners with ORG + VERSION + MACHINE columns and a
 // summary. versions maps RunnerVersionKey(org,name) to the recorded agent version
 // for runners this host installed; a runner with no recorded version (remote, or
-// created by an older srm) shows "-".
+// created by an older srm) shows "?" (the same unknown-version sentinel as the TUI).
 func printRunnerRows(rows []service.RunnerWithOrg, versions map[string]string) {
 	fmt.Printf("%-16s %-12s %-30s %-8s %-5s %-8s %-9s %-7s %s\n", "ORG", "ID", "NAME", "STATUS", "JOB", "OS", "VERSION", "MACHINE", "LABELS")
 	counts := make(map[string]int)
@@ -411,7 +437,7 @@ func printRunnerRows(rows []service.RunnerWithOrg, versions map[string]string) {
 		}
 		ver := versions[service.RunnerVersionKey(row.Org, r.Name)]
 		if ver == "" {
-			ver = "-"
+			ver = "?"
 		}
 		fmt.Printf("%-16s %-12d %-30s %-8s %-5s %-8s %-9s %-7s %s\n",
 			row.Org, r.ID, r.Name, r.Status, job, r.OS, ver, machine, labelNames(r.Labels))

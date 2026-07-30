@@ -225,18 +225,11 @@ func (v ephemeralView) detail() string {
 	return strings.Join(parts, v.theme.Faint.Render(" · "))
 }
 
-// slotState classifies a slot lane exactly as reconcile does (host health only).
+// slotState classifies a slot lane exactly as reconcile does (host health only) via
+// the single shared classifier, so the Ephemeral tab, the Drift tab, and the CLI
+// never invent divergent vocab (item 6 #4).
 func slotState(s service.EphemeralSlot) (label string, healthy bool) {
-	switch {
-	case s.Active && s.Restarts < service.EphemeralRestartThreshold && s.UnitOK:
-		return "active", true
-	case !s.Active:
-		return "down", false
-	case !s.UnitOK:
-		return "drift", false
-	default:
-		return "crash-loop", false
-	}
+	return service.EphemeralSlotState(s.Active, s.UnitOK, s.LastResult)
 }
 
 func slotStatePlain(s service.EphemeralSlot) string {
@@ -244,7 +237,7 @@ func slotStatePlain(s service.EphemeralSlot) string {
 	mark := "▲"
 	if healthy {
 		mark = "●"
-	} else if label == "down" {
+	} else if label == service.EphemeralDown {
 		mark = "○"
 	}
 	return mark + " " + label
@@ -255,36 +248,45 @@ func (v ephemeralView) slotBadge(s service.EphemeralSlot) string {
 	switch {
 	case healthy:
 		return v.theme.Online.Render("● " + label)
-	case label == "down":
+	case label == service.EphemeralDown:
 		return v.theme.Offline.Render("○ " + label)
 	default:
 		return v.theme.Busy.Render("▲ " + label)
 	}
 }
 
-// counts returns colored healthy/down/issue tallies plus an OOM sum for the header.
+// counts returns colored per-sub-state tallies for the header, using the SAME words
+// as the rows (item 6 #14): active/down are always shown as the baseline, and the
+// exceptional crash-loop/unit-drift buckets appear only when present - no vague
+// "issue" umbrella. Plus an OOM sum.
 func (v ephemeralView) counts() string {
-	var healthy, down, issue int
+	var active, down, crash, drift int
 	var oom int64
 	for _, s := range v.rows {
-		label, ok := slotState(s.EphemeralSlot)
-		switch {
-		case ok:
-			healthy++
-		case label == "down":
+		switch label, _ := slotState(s.EphemeralSlot); label {
+		case service.EphemeralActive:
+			active++
+		case service.EphemeralDown:
 			down++
-		default:
-			issue++
+		case service.EphemeralCrashLoop:
+			crash++
+		case service.EphemeralUnitDrift:
+			drift++
 		}
 		if s.OOMKills > 0 {
 			oom += s.OOMKills
 		}
 	}
-	out := fmt.Sprintf("%s  %s  %s",
-		v.theme.Online.Render(fmt.Sprintf("● %d active", healthy)),
+	out := fmt.Sprintf("%s  %s",
+		v.theme.Online.Render(fmt.Sprintf("● %d active", active)),
 		v.theme.Offline.Render(fmt.Sprintf("○ %d down", down)),
-		v.theme.Busy.Render(fmt.Sprintf("▲ %d issue", issue)),
 	)
+	if crash > 0 {
+		out += "  " + v.theme.Offline.Render(fmt.Sprintf("▲ %d crash-loop", crash))
+	}
+	if drift > 0 {
+		out += "  " + v.theme.Busy.Render(fmt.Sprintf("▲ %d unit-drift", drift))
+	}
 	if oom > 0 {
 		out += "  " + v.theme.Offline.Render(fmt.Sprintf("⚠ %d OOM", oom))
 	}

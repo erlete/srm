@@ -19,17 +19,18 @@ import (
 // looping + conformant unit), never by a GitHub registration, which churns every
 // job. Host-local: from a remote admin box none are returned.
 type EphemeralSlot struct {
-	Org      string
-	Slot     string
-	Active   bool
-	Restarts int
-	UnitOK   bool
-	MemPeak  int64    // cgroup bytes, -1 unknown
-	MemMax   int64    // cgroup bytes, -1 unlimited/unknown
-	MemCur   int64    // cgroup live bytes, -1 unknown
-	OOMKills int64    // cgroup memory.events oom_kill count, -1 unknown (0 = none)
-	GroupID  int64    // runner group minted into this slot's JIT registrations (0 = unknown)
-	Labels   []string // custom labels minted into this slot's JIT registrations
+	Org        string
+	Slot       string
+	Active     bool
+	Restarts   int
+	UnitOK     bool
+	LastResult string   // systemd Result of the last cycle ("success" = clean churn); drives the crash-loop sub-state
+	MemPeak    int64    // cgroup bytes, -1 unknown
+	MemMax     int64    // cgroup bytes, -1 unlimited/unknown
+	MemCur     int64    // cgroup live bytes, -1 unknown
+	OOMKills   int64    // cgroup memory.events oom_kill count, -1 unknown (0 = none)
+	GroupID    int64    // runner group minted into this slot's JIT registrations (0 = unknown)
+	Labels     []string // custom labels minted into this slot's JIT registrations
 }
 
 // IsEphemeralRunnerName reports whether a GitHub runner name was minted by an srm
@@ -61,7 +62,8 @@ func (m *Manager) ListEphemeralSlots(ctx context.Context, orgFilter string) ([]E
 		insp := orch.InspectEphemeral(ctx, org, slot)
 		es := EphemeralSlot{
 			Org: org, Slot: slot, Active: insp.Active, Restarts: insp.Restarts,
-			UnitOK: insp.UnitOK, MemPeak: insp.MemPeakBytes, MemMax: insp.MemMaxBytes,
+			UnitOK: insp.UnitOK, LastResult: insp.LastResult,
+			MemPeak: insp.MemPeakBytes, MemMax: insp.MemMaxBytes,
 			MemCur: insp.MemCurBytes, OOMKills: insp.OOMKills,
 		}
 		// The slot's group + labels live in its persisted JIT mint params (host-only,
@@ -143,6 +145,11 @@ func (m *Manager) CreateEphemeralRunners(ctx context.Context, spec DeploySpec, p
 	if spec.Count < 1 {
 		spec.Count = 1
 	}
+	// A named profile seeds empty fields (labels/group id) first, so the org-default
+	// fallbacks below only fill what neither the caller nor the profile set.
+	if err := m.applyProfileDefaults(org, &spec, true); err != nil {
+		return nil, err
+	}
 	// Fall back to the org's configured default labels when none were given
 	// (OrgConfig.DefaultLabels, previously a dead field; see defaultLabels). The
 	// default group is resolved just below via defaultGroupID.
@@ -157,6 +164,10 @@ func (m *Manager) CreateEphemeralRunners(ctx context.Context, spec DeploySpec, p
 			return nil, fmt.Errorf("ensure group %q: %w", spec.Group, err)
 		}
 		groupID = g.ID
+	}
+	// A profile may pass the group by ID (no name); honor it before the default.
+	if groupID == 0 && spec.GroupID > 0 {
+		groupID = spec.GroupID
 	}
 	// JIT minting REQUIRES a real group id - runner_group_id:0 is rejected by the
 	// API, which would make a slot hot-loop forever. Default to the org's configured

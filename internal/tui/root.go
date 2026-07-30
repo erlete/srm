@@ -163,6 +163,7 @@ type Model struct {
 	restore     restorePicker
 
 	manifestForm *manifestForm // lifecycle host-manifest editor (nil = closed)
+	profileForm  *profileForm  // lifecycle create-preset editor (nil = closed)
 
 	// Repo-access picker (autocomplete multi-select) for a "selected" group.
 	pickerOpen bool
@@ -249,7 +250,8 @@ func (m Model) loadCurrent() tea.Cmd {
 	case tabHealth:
 		return loadHealthCmd(m.ctx, m.mgr, m.orgFilter)
 	case tabRuns:
-		return loadRunsCmd(m.mgr)
+		// History (durable joblog store) + the live "active now" GitHub join, together.
+		return tea.Batch(loadRunsCmd(m.mgr), loadActiveRunsCmd(m.mgr, ""))
 	case tabSettings:
 		return loadSettingsCmd(m.mgr)
 	default:
@@ -293,6 +295,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// The host-manifest editor captures the loop while open.
 	if m.manifestForm != nil {
 		return m.updateManifestForm(msg)
+	}
+	// The create-preset editor captures the loop while open.
+	if m.profileForm != nil {
+		return m.updateProfileForm(msg)
 	}
 
 	switch msg := msg.(type) {
@@ -402,6 +408,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.setLoadStatus(len(hist), "run", nil)
 		}
+		return m, nil
+
+	case activeRunsMsg:
+		// The live "active now" join lands independently of the history load; filter it
+		// by the org display filter to match the history table.
+		runs := msg.runs
+		if len(m.orgVisible) > 0 {
+			runs = runs[:0:0]
+			for _, r := range msg.runs {
+				if m.orgVisible[r.Org] {
+					runs = append(runs, r)
+				}
+			}
+		}
+		m.runs.setActive(runs, msg.err)
 		return m, nil
 
 	case actionMsg:
@@ -889,11 +910,11 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.New):
 		switch m.tab {
 		case tabPersistent:
-			m.form = newCreateForm(m.mgr.OrgNames(), m.orgDefaults)
+			m.form = newCreateForm(m.mgr.OrgNames(), m.orgDefaults, m.profileNamesFor)
 			m.formOpen = true
 			return m, m.form.form.Init()
 		case tabEphemeral:
-			m.form = newEphemeralForm(m.mgr.OrgNames(), m.orgDefaults)
+			m.form = newEphemeralForm(m.mgr.OrgNames(), m.orgDefaults, m.profileNamesFor)
 			m.formOpen = true
 			return m, m.form.form.Init()
 		case tabGroups:
@@ -982,6 +1003,19 @@ func (m Model) orgDefaults(org string) ([]string, int64) {
 		return oc.DefaultLabels, oc.DefaultGroupID
 	}
 	return nil, 0
+}
+
+// profileNamesFor is the create-form profile resolver (profileLister type): the
+// selected org's create-presets of the given nature (ephemeral or persistent), read
+// live from config so the Profile select tracks the current file.
+func (m Model) profileNamesFor(org string, ephemeral bool) []string {
+	var names []string
+	for _, p := range m.mgr.Profiles(org) {
+		if p.Ephemeral == ephemeral {
+			names = append(names, p.Name)
+		}
+	}
+	return names
 }
 
 // visibleRunners / visibleSlots drop rows whose org is hidden by the org filter.
@@ -1114,6 +1148,11 @@ func (m Model) runLifecycle() (tea.Model, tea.Cmd) {
 		// `srm provision` (host op) applies it - editing is not itself a host op.
 		m.manifestForm = newManifestForm(m.mgr.HostManifest())
 		return m, m.manifestForm.form.Init()
+	case lifeProfiles:
+		// Create-preset editor: create/replace/delete a per-org profile, then persist.
+		// Not a host op - it only writes config (create USES the preset later).
+		m.profileForm = newProfileForm(m.mgr.OrgNames())
+		return m, m.profileForm.form.Init()
 	case lifeUninstall:
 		// Step 1: collect scope + Keep*/Force/Purge; the form's completion runs the
 		// dry-run blast-radius preview, which then escalates the destructive gates.
@@ -1650,7 +1689,7 @@ func (m Model) onEsc() (tea.Model, tea.Cmd) {
 // no op in flight, not filtering, and not already loading.
 func (m Model) idleForAuto() bool {
 	return !m.loading && !m.modalOpen && !m.typedOpen && !m.previewOpen && !m.formOpen && !m.infoOpen && !m.logOpen &&
-		m.setForm == nil && m.retForm == nil && m.groupForm == nil && m.runnerEdit == nil && m.upgradeForm == nil && m.uninstallForm == nil && m.onboardForm == nil && m.manifestForm == nil && !m.restoreOpen && !m.pickerOpen && !m.orgPickOpen && !m.op.open && !m.creating && !m.activeFiltering()
+		m.setForm == nil && m.retForm == nil && m.groupForm == nil && m.runnerEdit == nil && m.upgradeForm == nil && m.uninstallForm == nil && m.onboardForm == nil && m.manifestForm == nil && m.profileForm == nil && !m.restoreOpen && !m.pickerOpen && !m.orgPickOpen && !m.op.open && !m.creating && !m.activeFiltering()
 }
 
 // runConfirmed runs the yes/no-confirmed action: a pending op (through the op
@@ -1988,6 +2027,34 @@ func (m Model) updateManifestForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, saveManifestCmd(m.mgr, man)
 	case huh.StateAborted:
 		m.manifestForm = nil
+		m.status, m.stErr = "edit cancelled", false
+		return m, nil
+	}
+	return m, cmd
+}
+
+// updateProfileForm drives the create-preset editor. On completion it persists the
+// profile (or deletes it) via the service; on abort it just closes. This only writes
+// config - `srm runners create --profile` / the create wizard's Profile select USE it.
+func (m Model) updateProfileForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = ws.Width, ws.Height
+		m.help.SetWidth(ws.Width)
+		m.layout()
+	}
+	fm, cmd := m.profileForm.form.Update(msg)
+	if f, ok := fm.(*huh.Form); ok {
+		m.profileForm.form = f
+	}
+	switch m.profileForm.form.State {
+	case huh.StateCompleted:
+		org, p, del := m.profileForm.org, m.profileForm.profile(), m.profileForm.del
+		m.profileForm = nil
+		m.loading = true
+		m.status = "saving…"
+		return m, saveProfileCmd(m.mgr, org, p, del)
+	case huh.StateAborted:
+		m.profileForm = nil
 		m.status, m.stErr = "edit cancelled", false
 		return m, nil
 	}

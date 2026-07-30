@@ -222,6 +222,14 @@ func (m Model) bodyView(h int) string {
 		))
 		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
 	}
+	if m.profileForm != nil {
+		box := m.theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left,
+			m.theme.ModalT.Render("Manage create-presets"),
+			"",
+			m.profileForm.form.View(),
+		))
+		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
+	}
 	if m.restoreOpen {
 		return m.restore.view(m.width, h)
 	}
@@ -256,7 +264,12 @@ func (m Model) bodyView(h int) string {
 	case tabDrift:
 		return m.driftBody()
 	case tabRuns:
-		return lipgloss.JoinVertical(lipgloss.Left, m.runs.tableView(), m.runs.bottomLine())
+		parts := []string{}
+		if b := m.runs.activeBlock(); b != "" {
+			parts = append(parts, b, "")
+		}
+		parts = append(parts, m.runs.tableView(), m.runs.bottomLine())
+		return lipgloss.JoinVertical(lipgloss.Left, parts...)
 	case tabSettings:
 		return m.settingsBody()
 	default: // tabPersistent
@@ -325,13 +338,18 @@ func (m Model) contextHelp() string {
 	case tabHealth:
 		return "↑/↓ org · PgUp/PgDn scroll host · i info · e retention · u upgrade · P provision · r refresh" + global
 	case tabPersistent:
-		return "↑/↓ move · space select · A all · i info · n new · e group · d destroy · u upgrade · b rollback · R refresh · c recreate · / filter" + global
+		// #10: a remote runner has no host unit here - d deregisters it (not destroy).
+		verb := "destroy"
+		if r, ok := m.runners.selected(); ok && !r.Local {
+			verb = "deregister"
+		}
+		return "↑/↓ move · space select · A all · i info · n new · e group · d " + verb + " · u upgrade · b rollback · R refresh · c recreate · / filter" + global
 	case tabEphemeral:
 		return "↑/↓ move · space select · A all · i info · n new · d destroy · c recreate · / filter" + global
 	case tabGroups:
 		return "↑/↓ move · i info · n new · e edit · d delete · enter repo access · / filter" + global
 	case tabDrift:
-		return "↑/↓ move · i info · enter jump · f fix · g reap · r re-audit · / filter" + global
+		return "↑/↓ move · i info · enter jump · f fix · g reap ghosts · r re-audit · / filter" + global
 	case tabRuns:
 		return "↑/↓ move · i info · L log · / filter · r refresh" + global
 	case tabSettings:

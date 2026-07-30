@@ -34,24 +34,78 @@ func TestClassifyPersistent(t *testing.T) {
 	}
 }
 
-// TestClassifyEphemeral locks the ephemeral classification order, including that
-// UnitNewer is authoritative-skipped before the inactive/drift cases (mirroring the
-// persistent path).
+// TestClassifyEphemeral locks the ephemeral classification, including that UnitNewer
+// is authoritative-skipped before the down/drift cases (mirroring the persistent
+// path) and - the regression guard for item 6 #4 - that a busy healthy lane with a
+// high restart count is NOT false-flagged as crash-looping (Restart=always churns one
+// restart per job, so NRestarts is not a crash signal).
 func TestClassifyEphemeral(t *testing.T) {
 	cases := []struct {
 		name string
 		insp runner.EphemeralInspection
 		want string
 	}{
-		{"healthy active lane", runner.EphemeralInspection{Active: true, Restarts: 0, UnitOK: true}, ClassEphemeralSlot},
-		{"NEWER marker wins over inactive/drift", runner.EphemeralInspection{Active: false, UnitNewer: true, UnitOK: false, UnitVer: 99}, ClassEphemeralNewer},
-		{"inactive", runner.EphemeralInspection{Active: false, UnitOK: true}, ClassEphemeralStuck},
-		{"drifted: older/non-conformant", runner.EphemeralInspection{Active: true, UnitOK: false}, ClassEphemeralStuck},
-		{"crash-looping", runner.EphemeralInspection{Active: true, UnitOK: true, Restarts: EphemeralRestartThreshold + 1}, ClassEphemeralStuck},
+		{"healthy active lane", runner.EphemeralInspection{Active: true, Restarts: 0, UnitOK: true, LastResult: "success"}, ClassEphemeralSlot},
+		{"busy healthy lane, high restarts is NOT crash-loop", runner.EphemeralInspection{Active: true, UnitOK: true, Restarts: 999, LastResult: "success"}, ClassEphemeralSlot},
+		{"NEWER marker wins over down/drift", runner.EphemeralInspection{Active: false, UnitNewer: true, UnitOK: false, UnitVer: 99}, ClassEphemeralNewer},
+		{"down: inactive, clean last cycle", runner.EphemeralInspection{Active: false, UnitOK: true, LastResult: "success"}, ClassEphemeralStuck},
+		{"crash-loop: inactive AND last cycle failed", runner.EphemeralInspection{Active: false, UnitOK: true, LastResult: "exit-code"}, ClassEphemeralStuck},
+		{"unit-drift: non-conformant unit", runner.EphemeralInspection{Active: true, UnitOK: false}, ClassEphemeralStuck},
 	}
 	for _, c := range cases {
 		if got, _ := classifyEphemeral(c.insp); got != c.want {
 			t.Errorf("%s: classifyEphemeral = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestEphemeralSlotState locks the shared sub-state classifier - the single source
+// the Ephemeral tab, the Drift tab, and reconcile's detail all read (item 6 #4/#14).
+func TestEphemeralSlotState(t *testing.T) {
+	cases := []struct {
+		name           string
+		active, unitOK bool
+		lastResult     string
+		wantLabel      string
+		wantHealthy    bool
+	}{
+		{"active + conformant", true, true, "success", EphemeralActive, true},
+		{"active + high churn still healthy", true, true, "", EphemeralActive, true},
+		{"unit drifted (even while active)", true, false, "", EphemeralUnitDrift, false},
+		{"down: inactive, clean", false, true, "success", EphemeralDown, false},
+		{"down: inactive, result unknown", false, true, "", EphemeralDown, false},
+		{"crash-loop: inactive + failed", false, true, "signal", EphemeralCrashLoop, false},
+	}
+	for _, c := range cases {
+		gotLabel, gotHealthy := EphemeralSlotState(c.active, c.unitOK, c.lastResult)
+		if gotLabel != c.wantLabel || gotHealthy != c.wantHealthy {
+			t.Errorf("%s: EphemeralSlotState = (%q,%v), want (%q,%v)", c.name, gotLabel, gotHealthy, c.wantLabel, c.wantHealthy)
+		}
+	}
+}
+
+// TestClassLabel locks the canonical class->label vocab shared by the CLI and the
+// TUI badges (item 6 #5), including that both stuck families collapse to one word and
+// an unknown class echoes back verbatim.
+func TestClassLabel(t *testing.T) {
+	cases := map[string]string{
+		ClassHealthy:        "ok",
+		ClassEphemeralSlot:  "ok",
+		ClassStaleDropIn:    "stale",
+		ClassDropInNewer:    "newer",
+		ClassEphemeralNewer: "newer",
+		ClassStuck:          "stuck",
+		ClassEphemeralStuck: "stuck",
+		ClassOrphanUnit:     "orphan",
+		ClassOrphanGitHub:   "ghost",
+		ClassLegacyFlat:     "legacy",
+		ClassUnknown:        "unknown",
+		"":                  "unaudited",
+		"made-up-class":     "made-up-class",
+	}
+	for class, want := range cases {
+		if got := ClassLabel(class); got != want {
+			t.Errorf("ClassLabel(%q) = %q, want %q", class, got, want)
 		}
 	}
 }

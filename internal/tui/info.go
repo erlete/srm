@@ -263,7 +263,9 @@ func slotInfo(t Theme, s service.FusedSlot, memHist []int64) (string, string) {
 	blocks := []string{
 		kvSection(t, "Status", [][2]string{
 			{"state", label},
-			{"restarts", fmt.Sprintf("%d", s.Restarts)},
+			// NRestarts climbs once per churned job under Restart=always, so it reads as
+			// the lane's lifetime cycle count - not a crash-loop signal (item 6 #4).
+			{"cycles", fmt.Sprintf("%d", s.Restarts)},
 			{"unit", okDrift(s.UnitOK)},
 		}),
 		kvSection(t, "Agent", [][2]string{

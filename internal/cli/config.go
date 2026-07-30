@@ -21,8 +21,155 @@ func newConfigCmd() *cobra.Command {
 		Use:   "config",
 		Short: "Show or set host-wide policy toggles (rootless DinD, isolation, hardening)",
 	}
-	c.AddCommand(newConfigShowCmd(), newConfigSetCmd(), newConfigEditOrgCmd(), newConfigManifestCmd())
+	c.AddCommand(newConfigShowCmd(), newConfigSetCmd(), newConfigEditOrgCmd(), newConfigManifestCmd(), newConfigProfilesCmd())
 	return c
+}
+
+// newConfigProfilesCmd is the CLI mirror of the TUI profile editor: per-org named
+// create-presets (labels/group/nature + container metadata) applied by
+// `srm runners create --profile`.
+func newConfigProfilesCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "profiles",
+		Short: "List, set, or remove per-org runner create-presets (used by `srm runners create --profile`)",
+	}
+	c.AddCommand(newConfigProfilesListCmd(), newConfigProfilesSetCmd(), newConfigProfilesRemoveCmd())
+	return c
+}
+
+func newConfigProfilesListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List an org's create-presets (--org, or the sole org)",
+		RunE: func(*cobra.Command, []string) error {
+			mgr, closeLog, err := buildManager()
+			if err != nil {
+				return err
+			}
+			defer closeLog()
+			org, err := targetOrg(mgr)
+			if err != nil {
+				return err
+			}
+			printProfiles(org, mgr.Profiles(org))
+			return nil
+		},
+	}
+}
+
+func newConfigProfilesSetCmd() *cobra.Command {
+	var name, labels, container string
+	var groupID int64
+	var ephemeral, requireContainer bool
+	c := &cobra.Command{
+		Use:   "set",
+		Short: "Create or replace a create-preset (by name)",
+		Long: "Create or replace a per-org create-preset. Only the flags you pass change: a re-set of an " +
+			"existing profile preserves the rest (including the per-profile dependency manifest, which is " +
+			"edited in the TUI / YAML). --container and --require-container are METADATA documenting the " +
+			"lane's intended container policy - srm does not enforce them (the workflow's `container:` does).",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("--name is required")
+			}
+			mgr, closeLog, err := buildManager()
+			if err != nil {
+				return err
+			}
+			defer closeLog()
+			org, err := targetOrg(mgr)
+			if err != nil {
+				return err
+			}
+			p, _ := mgr.Profile(org, name) // start from the existing profile (zero value if new)
+			p.Name = strings.TrimSpace(name)
+			if cmd.Flags().Changed("labels") {
+				p.Labels = splitCSV(labels)
+			}
+			if cmd.Flags().Changed("group-id") {
+				p.GroupID = groupID
+			}
+			if cmd.Flags().Changed("ephemeral") {
+				p.Ephemeral = ephemeral
+			}
+			if cmd.Flags().Changed("container") {
+				p.DefaultContainerImage = strings.TrimSpace(container)
+			}
+			if cmd.Flags().Changed("require-container") {
+				p.RequireJobContainer = requireContainer
+			}
+			if err := mgr.UpsertProfile(org, p); err != nil {
+				return err
+			}
+			fmt.Printf("saved profile %q → %s\n", p.Name, mgr.ConfigPath())
+			printProfiles(org, mgr.Profiles(org))
+			return nil
+		},
+	}
+	c.Flags().StringVar(&name, "name", "", "profile name (required)")
+	c.Flags().StringVar(&labels, "labels", "", "comma-separated custom labels")
+	c.Flags().Int64Var(&groupID, "group-id", 0, "runner group id (0 = org default)")
+	c.Flags().BoolVar(&ephemeral, "ephemeral", false, "profile creates ephemeral JIT slots (else persistent)")
+	c.Flags().StringVar(&container, "container", "", "metadata: intended default job container image (not enforced by srm)")
+	c.Flags().BoolVar(&requireContainer, "require-container", false, "metadata: lane is intended for container jobs (not enforced by srm)")
+	return c
+}
+
+func newConfigProfilesRemoveCmd() *cobra.Command {
+	var name string
+	c := &cobra.Command{
+		Use:   "remove",
+		Short: "Remove a create-preset by name",
+		RunE: func(*cobra.Command, []string) error {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("--name is required")
+			}
+			mgr, closeLog, err := buildManager()
+			if err != nil {
+				return err
+			}
+			defer closeLog()
+			org, err := targetOrg(mgr)
+			if err != nil {
+				return err
+			}
+			if err := mgr.RemoveProfile(org, name); err != nil {
+				return err
+			}
+			fmt.Printf("removed profile %q → %s\n", name, mgr.ConfigPath())
+			return nil
+		},
+	}
+	c.Flags().StringVar(&name, "name", "", "profile name (required)")
+	return c
+}
+
+// printProfiles renders an org's create-presets one per line (no secrets involved).
+func printProfiles(org string, profs []core.RunnerProfile) {
+	if len(profs) == 0 {
+		fmt.Printf("org %s has no create-presets. Add one with `srm config profiles set --name ...`.\n", org)
+		return
+	}
+	fmt.Printf("create-presets for %s:\n", org)
+	for _, p := range profs {
+		line := fmt.Sprintf("  %-16s %s", p.Name, natureWord(p.Ephemeral))
+		if len(p.Labels) > 0 {
+			line += "  labels=" + strings.Join(p.Labels, ",")
+		}
+		if p.GroupID > 0 {
+			line += fmt.Sprintf("  group-id=%d", p.GroupID)
+		}
+		if p.DefaultContainerImage != "" {
+			line += "  container=" + p.DefaultContainerImage
+		}
+		if p.RequireJobContainer {
+			line += "  require-container"
+		}
+		if !p.Manifest.Empty() {
+			line += "  +manifest"
+		}
+		fmt.Println(line)
+	}
 }
 
 // newConfigEditOrgCmd re-edits an existing org through the SAME prefilled form as the

@@ -180,13 +180,13 @@ func TestRenderPaths(t *testing.T) {
 
 	// Create wizard (persistent).
 	m.formOpen = true
-	m.form = newCreateForm(mgr.OrgNames(), m.orgDefaults)
+	m.form = newCreateForm(mgr.OrgNames(), m.orgDefaults, m.profileNamesFor)
 	if v := m.View(); v.Content == "" {
 		t.Fatal("nil view with wizard open")
 	}
 
 	// Create wizard (ephemeral) - a distinct form, distinct title.
-	m.form = newEphemeralForm(mgr.OrgNames(), m.orgDefaults)
+	m.form = newEphemeralForm(mgr.OrgNames(), m.orgDefaults, m.profileNamesFor)
 	if v := m.View(); v.Content == "" {
 		t.Fatal("nil view with ephemeral wizard open")
 	}
@@ -227,10 +227,23 @@ func TestRenderPaths(t *testing.T) {
 	}
 	m.manifestForm = nil
 
+	// Create-preset editor form (Lifecycle "Manage profiles").
+	m.tab = tabSettings
+	m.profileForm = newProfileForm(mgr.OrgNames())
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with profile form open")
+	}
+	m.profileForm = nil
+
 	// Runs tab (durable job-log history) + run Info panel.
 	step(runsMsg{history: []joblog.Meta{
 		{Org: "acme", Slot: "1", RunnerName: "srm-eph-acme-1-ab", RunnerID: 101, StartedUnix: 1, EndedUnix: 31, OK: true, HasLog: true},
 		{Org: "acme", Slot: "2", RunnerName: "srm-eph-acme-2-cd", RunnerID: 102, StartedUnix: 2, EndedUnix: 2, OK: false, Error: "boom"},
+	}})
+	// Live "active now" block above the history table (one ephemeral, one persistent).
+	step(activeRunsMsg{runs: []service.ActiveRun{
+		{Org: "acme", RunnerName: "srm-eph-acme-1-ab", Slot: "1", Ephemeral: true, Job: core.RunnerJob{Repo: "acme/api", Workflow: "CI", JobName: "build"}},
+		{Org: "globex", RunnerName: "r-2", Job: core.RunnerJob{Repo: "globex/web", Workflow: "Deploy", JobName: "e2e"}},
 	}})
 	m.tab = tabRuns
 	if v := m.View(); v.Content == "" {

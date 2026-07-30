@@ -18,6 +18,8 @@ type DeploySpec struct {
 	NamePrefix string
 	Labels     []string // custom labels (tags)
 	Group      string   // runner group name; created if missing
+	GroupID    int64    // runner group id; used only when Group (name) is empty (e.g. from a profile)
+	Profile    string   // named org create-preset to seed empty fields from (see applyProfileDefaults)
 }
 
 // CreateGroup creates a runner group (honors dry-run).
@@ -163,11 +165,21 @@ func (m *Manager) CreateRunners(ctx context.Context, spec DeploySpec, progress c
 	if spec.Count < 1 {
 		spec.Count = 1
 	}
-	// Fall back to the org's configured runner defaults when the caller passed
-	// none: labels (OrgConfig.DefaultLabels; see defaultLabels) and group. The
-	// persistent path previously IGNORED DefaultGroupID (ephemeral already honored
-	// it) - resolve the configured default group's NAME here (the create path takes
-	// a name; JIT/ephemeral takes an id). Skipped under dry-run to stay API-free.
+	// A named profile seeds empty fields (labels/group) first, so the org-default
+	// fallbacks below only fill what neither the caller nor the profile set.
+	if err := m.applyProfileDefaults(org, &spec, false); err != nil {
+		return nil, err
+	}
+	// A profile (or caller) may pass a group by ID; the create path takes a NAME, so
+	// resolve it. Skipped under dry-run to stay API-free.
+	if spec.Group == "" && spec.GroupID > 0 && !m.cfg.DryRun {
+		spec.Group = m.groupNameByID(ctx, org, spec.GroupID)
+	}
+	// Fall back to the org's configured runner defaults when neither the caller nor a
+	// profile supplied them: labels (OrgConfig.DefaultLabels; see defaultLabels) and
+	// group. The persistent path previously IGNORED DefaultGroupID (ephemeral already
+	// honored it) - resolve the configured default group's NAME here (the create path
+	// takes a name; JIT/ephemeral takes an id). Skipped under dry-run to stay API-free.
 	if len(spec.Labels) == 0 {
 		spec.Labels = m.defaultLabels(org)
 	}

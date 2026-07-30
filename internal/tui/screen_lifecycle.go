@@ -11,6 +11,7 @@ const (
 	lifeBackup lifecycleAction = iota
 	lifeProvision
 	lifeManifest
+	lifeProfiles
 	lifeUninstall
 	lifeOnboard
 	lifeEditOrg
@@ -42,6 +43,7 @@ func newLifecycleView(t Theme) lifecycleView {
 			{lifeBackup, "Back up config", "Snapshot config.yaml + secrets.age + per-org keys to a tarball.", false, true},
 			{lifeProvision, "Provision host deps", "Install the configured host dependency manifest (apt/scripts/tool-cache).", true, true},
 			{lifeManifest, "Edit host manifest", "Edit the host dependency manifest (apt packages, setup scripts incl. inline, tool-cache seeds, cache paths). Provision applies it.", false, true},
+			{lifeProfiles, "Manage profiles", "Create, replace, or delete a per-org create-preset (labels/group/nature/container). Used by the create wizard's Profile select and `srm runners create --profile`.", false, true},
 			{lifeUninstall, "Uninstall (guarded)", "Tear down srm-created units, users, and trees on this host. Dry-run blast radius, then a typed hostname confirm.", true, true},
 			{lifeOnboard, "Onboard a new org", "Add an org's GitHub App creds, save + reload config, and verify auth - the same form as `srm init`.", false, true},
 			{lifeEditOrg, "Edit an org", "Re-edit an org's App creds + runner defaults (prefilled; key defaults to keep). Filter to one org (o) first if several are configured.", false, true},

@@ -22,6 +22,7 @@ type createForm struct {
 	count     string
 	labels    string
 	group     string
+	profile   string // selected create-preset name ("" = none)
 }
 
 // orgDefaults resolves an org's configured runner defaults (custom labels + the
@@ -29,6 +30,25 @@ type createForm struct {
 // as the operator changes the Org select, so the label/group hints always reflect
 // the selected org. A nil resolver (tests) is treated as "no defaults".
 type orgDefaults func(org string) (labels []string, groupID int64)
+
+// profileLister returns the names of an org's create-presets of a given nature
+// (ephemeral or persistent), for the create form's reactive Profile select. A nil
+// lister (tests) means "no profiles".
+type profileLister func(org string, ephemeral bool) []string
+
+// profileOptionsFunc is the reactive OptionsFunc for the Profile select: "(none)"
+// plus the selected org's presets of this form's nature. Rebinds on org change.
+func profileOptionsFunc(cf *createForm, list profileLister) func() []huh.Option[string] {
+	return func() []huh.Option[string] {
+		opts := []huh.Option[string]{huh.NewOption("(none)", "")}
+		if list != nil {
+			for _, n := range list(cf.org, cf.ephemeral) {
+				opts = append(opts, huh.NewOption(n, n))
+			}
+		}
+		return opts
+	}
+}
 
 // labelsHintFunc returns a PlaceholderFunc closure that shows the selected org's
 // configured default labels (what the service will apply if the field is left
@@ -56,7 +76,7 @@ func groupHintFunc(cf *createForm, def orgDefaults) func() string {
 	}
 }
 
-func newCreateForm(orgs []string, def orgDefaults) *createForm {
+func newCreateForm(orgs []string, def orgDefaults, prof profileLister) *createForm {
 	if def == nil {
 		def = func(string) ([]string, int64) { return nil, 0 }
 	}
@@ -67,6 +87,7 @@ func newCreateForm(orgs []string, def orgDefaults) *createForm {
 	cf.form = huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().Title("Org").Options(orgOptions(orgs)...).Value(&cf.org),
+			huh.NewSelect[string]().Title("Profile - optional preset (seeds labels/group)").OptionsFunc(profileOptionsFunc(cf, prof), &cf.org).Value(&cf.profile),
 			huh.NewInput().Title("Name prefix").Placeholder("runner").Value(&cf.prefix).Validate(nonEmpty),
 			huh.NewInput().Title("Count").Value(&cf.count).Validate(posInt),
 			huh.NewInput().Title("Labels - comma-separated, optional").PlaceholderFunc(labelsHintFunc(cf, def), &cf.org).Value(&cf.labels),
@@ -79,7 +100,7 @@ func newCreateForm(orgs []string, def orgDefaults) *createForm {
 // newEphemeralForm builds the create wizard for ephemeral slot lanes. No name
 // prefix is collected - slots are numbered 1..N - and the help text names them
 // plainly so the ephemeral nature is never mistaken for a persistent runner.
-func newEphemeralForm(orgs []string, def orgDefaults) *createForm {
+func newEphemeralForm(orgs []string, def orgDefaults, prof profileLister) *createForm {
 	if def == nil {
 		def = func(string) ([]string, int64) { return nil, 0 }
 	}
@@ -91,6 +112,7 @@ func newEphemeralForm(orgs []string, def orgDefaults) *createForm {
 		huh.NewGroup(
 			huh.NewSelect[string]().Title("Org").Options(orgOptions(orgs)...).Value(&cf.org),
 			huh.NewNote().Description("Ephemeral slots are numbered lanes (1..N). Each mints a single-use JIT registration per job and runs on a clean slate."),
+			huh.NewSelect[string]().Title("Profile - optional preset (seeds labels/group)").OptionsFunc(profileOptionsFunc(cf, prof), &cf.org).Value(&cf.profile),
 			huh.NewInput().Title("Slot count").Value(&cf.count).Validate(posInt),
 			huh.NewInput().Title("Labels - comma-separated, optional").PlaceholderFunc(labelsHintFunc(cf, def), &cf.org).Value(&cf.labels),
 			huh.NewInput().Title("Group - optional, created if missing").PlaceholderFunc(groupHintFunc(cf, def), &cf.org).Value(&cf.group),
@@ -119,6 +141,7 @@ func (cf *createForm) spec() service.DeploySpec {
 		NamePrefix: strings.TrimSpace(cf.prefix),
 		Labels:     splitComma(cf.labels),
 		Group:      strings.TrimSpace(cf.group),
+		Profile:    strings.TrimSpace(cf.profile),
 	}
 }
 

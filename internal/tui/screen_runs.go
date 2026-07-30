@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -12,21 +13,32 @@ import (
 	"github.com/erlete/srm/internal/service"
 )
 
-// runsView is the Runs tab: a host-local table of captured ephemeral job runs from the
-// durable joblog store, which outlives the per-cycle _diag wipe. It is READ-ONLY (runs
-// are history, not entities you mutate): L opens a run's captured log, i shows its
-// detail. The unique value here is the durable run history + logs that nothing else
-// keeps; live repo/workflow enrichment via GitHub is a future Phase-D addition.
+// runsView is the Runs tab: a compact live "active now" block (the jobs the fleet's
+// busy runners are running right now, joined from GitHub) above a host-local table of
+// captured ephemeral job runs from the durable joblog store, which outlives the
+// per-cycle _diag wipe. The table is READ-ONLY (runs are history, not entities you
+// mutate): L opens a run's captured log, i shows its detail. The unique value is the
+// durable run history + logs that nothing else keeps, plus the live active join.
 type runsView struct {
-	st    scrollTable
-	cols  []table.Column
-	all   []joblog.Meta
-	rows  []joblog.Meta
-	theme Theme
-	width int
-	flt   filterState
-	err   error
+	st     scrollTable
+	cols   []table.Column
+	all    []joblog.Meta
+	rows   []joblog.Meta
+	theme  Theme
+	width  int
+	height int
+	flt    filterState
+	err    error
+
+	// "active now" (live from GitHub): the jobs the fleet's busy runners are running
+	// right now, shown as a compact block above the durable history table.
+	active    []service.ActiveRun
+	activeErr error
 }
+
+// activeMax caps how many active runs the compact block lists (the rest collapse to
+// a "+N more" line) so the block never crowds out the history table.
+const activeMax = 6
 
 func newRunsView(t Theme) runsView {
 	cols := []table.Column{
@@ -43,12 +55,14 @@ func newRunsView(t Theme) runsView {
 }
 
 func (v *runsView) setSize(w, h int) {
-	v.width = w
+	v.width, v.height = w, h
 	v.st.setWidth(w)
 	v.st.setColumns(fillWidth(v.cols, w))
 	v.flt.setWidth(w - 4)
-	if h > 3 {
-		v.st.setHeight(h)
+	// The history table gets whatever height the "active now" block leaves it.
+	th := h - v.activeHeight()
+	if th > 3 {
+		v.st.setHeight(th)
 	}
 }
 
@@ -58,6 +72,52 @@ func (v *runsView) setData(history []joblog.Meta, err error) {
 	v.all = history
 	v.err = err
 	v.applyFilter()
+}
+
+// setActive replaces the "active now" block data (already org-filtered by the model),
+// then re-applies the size so the history table height accounts for the block.
+func (v *runsView) setActive(runs []service.ActiveRun, err error) {
+	v.active = runs
+	v.activeErr = err
+	v.setSize(v.width, v.height)
+}
+
+// activeHeight is the rendered height the "active now" block reserves from the history
+// table (0 when there is nothing to show).
+func (v runsView) activeHeight() int {
+	b := v.activeBlock()
+	if b == "" {
+		return 0
+	}
+	return strings.Count(b, "\n") + 2 // block lines + a trailing spacer
+}
+
+// activeBlock renders the compact "active now" section: the jobs the fleet's busy
+// runners are running right now (capped at activeMax; the rest collapse to "+N more").
+// Empty (0 height) when nothing is active and no error, so a quiet fleet's history is
+// never crowded.
+func (v runsView) activeBlock() string {
+	t := v.theme
+	if v.activeErr != nil {
+		return t.Offline.Render("▶ active now: unavailable (" + v.activeErr.Error() + ")")
+	}
+	if len(v.active) == 0 {
+		return ""
+	}
+	lines := []string{t.Title.Render(fmt.Sprintf("▶ active now (%d)", len(v.active)))}
+	for i, r := range v.active {
+		if i >= activeMax {
+			lines = append(lines, t.Faint.Render(fmt.Sprintf("  +%d more", len(v.active)-activeMax)))
+			break
+		}
+		who := r.RunnerName
+		if r.Ephemeral {
+			who = "eph " + r.Slot + " · " + r.RunnerName
+		}
+		lines = append(lines, t.Crumb.Render("  "+r.Org+" "+who)+t.Faint.Render("  →  ")+
+			t.Online.Render(r.Job.Repo)+t.Faint.Render(" · "+r.Job.Workflow+" · "+r.Job.JobName))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (v *runsView) applyFilter() {
@@ -174,7 +234,7 @@ func runInfo(t Theme, m joblog.Meta) (string, string) {
 	if m.Error != "" {
 		lines = append(lines, kv("error", t.Offline.Render(m.Error)))
 	}
-	lines = append(lines, "", t.Faint.Render("repo/workflow enrichment via GitHub is a future addition."))
+	lines = append(lines, "", t.Faint.Render("a running job's repo/workflow shows in the 'active now' block above."))
 	if m.HasLog {
 		lines = append(lines, t.Faint.Render("Press L to view the captured log."))
 	}
@@ -194,6 +254,22 @@ func loadRunsCmd(mgr *service.Manager) tea.Cmd {
 	return func() tea.Msg {
 		h, err := mgr.JobLogStore().List()
 		return runsMsg{history: h, err: err}
+	}
+}
+
+// activeRunsMsg carries the live "active now" join to the Runs tab.
+type activeRunsMsg struct {
+	runs []service.ActiveRun
+	err  error
+}
+
+// loadActiveRunsCmd resolves the fleet's currently-running jobs off the event loop (a
+// GitHub join scoped to org). Best-effort: an error is surfaced in the block; the
+// history table stands on its own regardless.
+func loadActiveRunsCmd(mgr *service.Manager, org string) tea.Cmd {
+	return func() tea.Msg {
+		runs, err := mgr.ActiveRuns(context.Background(), org)
+		return activeRunsMsg{runs: runs, err: err}
 	}
 }
 

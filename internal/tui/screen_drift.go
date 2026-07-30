@@ -32,8 +32,18 @@ type driftView struct {
 // driftEntry is one non-healthy fleet row shown on the Drift tab.
 type driftEntry struct {
 	org, name, class, detail string
+	label                    string // display label; "" = use service.ClassLabel(class). Ephemeral rows carry the precise sub-state (down/crash-loop/unit-drift) so the Drift tab shows the SAME word as the Ephemeral tab (item 6 #4).
 	busy                     bool
 	isSlot                   bool
+}
+
+// displayLabel is the row's STATE word: the precise ephemeral sub-state when set,
+// else the canonical class label shared with the CLI.
+func (e driftEntry) displayLabel() string {
+	if e.label != "" {
+		return e.label
+	}
+	return service.ClassLabel(e.class)
 }
 
 func newDriftView(t Theme) driftView {
@@ -69,7 +79,13 @@ func (v *driftView) setRows(snap service.FleetSnapshot) {
 	}
 	for _, s := range snap.Slots {
 		if s.DriftClass != "" && s.DriftClass != service.ClassEphemeralSlot {
-			v.all = append(v.all, driftEntry{org: s.Org, name: "slot " + s.Slot, class: s.DriftClass, detail: s.DriftDetail, isSlot: true})
+			// Show the precise sub-state (down/crash-loop/unit-drift) for a stuck lane;
+			// a "newer" lane keeps the class label (its sub-state would read unit-drift).
+			sub := ""
+			if s.DriftClass == service.ClassEphemeralStuck {
+				sub, _ = service.EphemeralSlotState(s.Active, s.UnitOK, s.LastResult)
+			}
+			v.all = append(v.all, driftEntry{org: s.Org, name: "slot " + s.Slot, class: s.DriftClass, label: sub, detail: s.DriftDetail, isSlot: true})
 		}
 	}
 	sort.Slice(v.all, func(i, j int) bool {
@@ -97,12 +113,11 @@ func (v *driftView) applyFilter() {
 	}
 	tr := make([]table.Row, 0, len(v.rows))
 	for _, r := range v.rows {
-		g, l := driftGlyph(r.class)
 		detail := r.detail
 		if r.busy {
 			detail = "(busy - skipped) " + detail
 		}
-		tr = append(tr, table.Row{g + " " + l, r.org, r.name, fixPlan(r.class), detail})
+		tr = append(tr, table.Row{driftClassGlyph(r.class) + " " + r.displayLabel(), r.org, r.name, fixPlan(r.class), detail})
 	}
 	v.st.setRows(tr)
 	if cursor >= len(tr) {
@@ -114,8 +129,7 @@ func (v *driftView) applyFilter() {
 }
 
 func (v driftView) haystack(e driftEntry) string {
-	_, label := driftGlyph(e.class)
-	return strings.ToLower(strings.Join([]string{e.org, e.name, e.class, label, fixPlan(e.class), e.detail}, " "))
+	return strings.ToLower(strings.Join([]string{e.org, e.name, e.class, e.displayLabel(), fixPlan(e.class), e.detail}, " "))
 }
 
 // fixPlan is the operator-facing remediation for a drift class - a pure function of
