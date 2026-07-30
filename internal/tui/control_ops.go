@@ -153,7 +153,9 @@ func planPruneCmd(ctx context.Context, mgr *service.Manager, days int) tea.Cmd {
 	}
 }
 
-// planProvisionCmd runs a host-drift check and builds the preview + apply op.
+// planProvisionCmd runs a host-drift check and builds the preview + apply op. When
+// rootless DinD is enabled it also installs the DinD host prerequisites (FP1) as part
+// of the same op, surfacing any current blockers in the preview.
 func planProvisionCmd(ctx context.Context, mgr *service.Manager, t Theme) tea.Cmd {
 	return func() tea.Msg {
 		man := mgr.HostManifest()
@@ -165,6 +167,14 @@ func planProvisionCmd(ctx context.Context, mgr *service.Manager, t Theme) tea.Cm
 		for _, item := range missing {
 			lines = append(lines, t.Busy.Render("  + "+item))
 		}
+		// Rootless-DinD prerequisites (Linux only; rep.Enabled is false off-host and on
+		// Windows). Adding them to this op means the existing `P provision` remediates the
+		// FP1 "silently queued fleet" trap.
+		dind := mgr.DinDReadiness(mgr.OrgNames())
+		dindBlockers := len(dind.Blockers())
+		for _, c := range dind.Blockers() {
+			lines = append(lines, t.Busy.Render("  + rootless-DinD: "+c.Name+"  "+c.Detail))
+		}
 		apply := opSpec{
 			Title: "Provision host",
 			Noun:  "host",
@@ -172,10 +182,21 @@ func planProvisionCmd(ctx context.Context, mgr *service.Manager, t Theme) tea.Cm
 				if err := mgr.ProvisionHost(ctx, man); err != nil {
 					return nil, err
 				}
-				return []opItem{{Label: "this host", Outcome: outcomeOK, Detail: fmt.Sprintf("applied manifest (%d item(s) were missing)", len(missing))}}, nil
+				detail := fmt.Sprintf("applied manifest (%d item(s) were missing)", len(missing))
+				if dind.Enabled {
+					if err := mgr.ProvisionRootlessDinD(ctx); err != nil {
+						return nil, err
+					}
+					detail += fmt.Sprintf("; rootless-DinD prereqs applied (%d were missing)", dindBlockers)
+				}
+				return []opItem{{Label: "this host", Outcome: outcomeOK, Detail: detail}}, nil
 			},
 		}
-		return previewMsg{title: "Provision host (preview)", note: "installs the configured host dependency manifest", lines: lines, spec: apply}
+		note := "installs the configured host dependency manifest"
+		if dind.Enabled {
+			note += " + rootless-DinD prerequisites"
+		}
+		return previewMsg{title: "Provision host (preview)", note: note, lines: lines, spec: apply}
 	}
 }
 

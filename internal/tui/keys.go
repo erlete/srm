@@ -21,6 +21,7 @@ type keyMap struct {
 	Enter     key.Binding
 	Esc       key.Binding
 	Info      key.Binding
+	Logs      key.Binding
 	Select    key.Binding
 	SelectAll key.Binding
 	Dismiss   key.Binding
@@ -57,6 +58,7 @@ func newKeyMap() keyMap {
 		Enter:     key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open/confirm")),
 		Esc:       key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		Info:      key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "information")),
+		Logs:      key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "view logs")),
 		Select:    key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "select")),
 		SelectAll: key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "select/clear all")),
 		Dismiss:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "dismiss banner")),
@@ -82,7 +84,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 // FullHelp is the expanded, columnar help.
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Filter, k.Info, k.Enter},
+		{k.Up, k.Down, k.Filter, k.Info, k.Logs, k.Enter},
 		{k.Tab, k.ShiftTab, k.Org, k.Auto},
 		{k.New, k.Delete, k.Edit, k.Refresh},
 		{k.Select, k.SelectAll, k.Dismiss, k.Esc},

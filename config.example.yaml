@@ -93,12 +93,13 @@ isolation:
 # rootless-capable buildx builder (BUILDX_BUILDER) so `setup-buildx-action` +
 # `build-push-action` (incl. cache type=gha) work as-is.
 #
-# Host prerequisites (srm does NOT install Docker by default - add these to the host
-# manifest / a setupScript; `srm doctor` probes them, and EnsureBase allocates the
-# per-user /etc/subuid + /etc/subgid range):
-#   aptPackages: [docker-ce, docker-ce-cli, containerd.io,
-#                 docker-ce-rootless-extras, uidmap, slirp4netns, fuse-overlayfs]
-#   sysctl (setupScript): kernel.unprivileged_userns_clone=1, user.max_user_namespaces>=15000
+# Host prerequisites: run `sudo srm provision --rootless-dind` once - it installs
+# Docker CE + rootless-extras, uidmap, fuse-overlayfs, slirp4netns and sets the userns
+# sysctls (idempotent). `srm doctor` probes them and BLOCKS (non-zero) on a missing
+# one; EnsureBase allocates the per-user /etc/subuid + /etc/subgid range. (Manual
+# equivalent: aptPackages [docker-ce, docker-ce-cli, containerd.io,
+# docker-ce-rootless-extras, uidmap, slirp4netns, fuse-overlayfs] + sysctl
+# kernel.unprivileged_userns_clone=1, user.max_user_namespaces>=15000.)
 # Off by default (zero value) = runners ship bare, byte-identical to before.
 docker:
   rootlessDinD: false

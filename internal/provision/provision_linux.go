@@ -94,11 +94,16 @@ func (u *ubuntu) Apply(ctx context.Context, m core.DependencyManifest) error {
 	}
 
 	for _, script := range m.SetupScripts {
-		if _, err := os.Stat(script); err != nil {
-			return fmt.Errorf("setup script %s: %w", script, err)
+		// A SetupScripts entry is either a pre-placed path or an inline body
+		// (P4) that resolveSetupScript materializes to a 0700 temp file.
+		path, cleanup, err := resolveSetupScript(script, ".sh")
+		if err != nil {
+			return wrapScriptErr(script, err)
 		}
-		if err := run(ctx, "bash", script); err != nil {
-			return fmt.Errorf("setup script %s: %w", script, err)
+		runErr := run(ctx, "bash", path)
+		cleanup()
+		if runErr != nil {
+			return wrapScriptErr(script, runErr)
 		}
 	}
 

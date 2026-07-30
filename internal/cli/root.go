@@ -45,7 +45,7 @@ func Execute(version string) error {
 	root.PersistentFlags().StringVar(&flagOrg, "org", "", "operate on a single org (default: all configured orgs where applicable)")
 	root.PersistentFlags().BoolVar(&flagDryRun, "dry-run", false, "preview mutations without calling GitHub")
 
-	root.AddCommand(newInitCmd(), newRunnersCmd(), newGroupsCmd(), newProvisionCmd(), newDoctorCmd(), newCacheCmd(), newReconcileCmd(), newRunnerCycleCmd(), newRunnerSupervisorCmd(), newBackupCmd(), newRestoreCmd(), newUninstallCmd(), newVersionCmd(version))
+	root.AddCommand(newInitCmd(), newConfigCmd(), newRunnersCmd(), newGroupsCmd(), newProvisionCmd(), newDoctorCmd(), newCacheCmd(), newRunsCmd(), newReconcileCmd(), newRunnerCycleCmd(), newRunnerSupervisorCmd(), newBackupCmd(), newRestoreCmd(), newUninstallCmd(), newVersionCmd(version))
 	return root.Execute()
 }
 
@@ -91,13 +91,27 @@ func defaultConfigPath() string {
 // /etc/srm holds both config.yaml and secrets.age on a managed host.
 func secretsPath() string {
 	if flagConfig != "" {
-		return filepath.Join(filepath.Dir(flagConfig), "secrets.age")
+		return config.SecretsFilePath(flagConfig)
 	}
 	dir, err := os.UserConfigDir()
 	if err != nil || dir == "" {
 		return "srm-secrets.age"
 	}
 	return filepath.Join(dir, "srm", "secrets.age")
+}
+
+// passFilePath co-locates the root-only secrets passphrase file with the active
+// config, mirroring secretsPath. It holds an interactively-created passphrase so the
+// detached ephemeral units and later runs can decrypt without SRM_SECRETS_PASSPHRASE.
+func passFilePath() string {
+	if flagConfig != "" {
+		return config.PassphraseFilePath(flagConfig)
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil || dir == "" {
+		return "srm-secrets.pass"
+	}
+	return filepath.Join(dir, "srm", "secrets.pass")
 }
 
 // buildManager loads config + secrets + logging and returns a service.Manager
@@ -159,10 +173,12 @@ func noOrgsError() error {
 	return fmt.Errorf("no orgs configured - create %s (see config.example.yaml)", flagConfig)
 }
 
-// resolveSecrets prefers an age-encrypted file when SRM_SECRETS_PASSPHRASE is
-// set; otherwise it falls back to environment variables.
+// resolveSecrets prefers an age-encrypted file when a passphrase is available -
+// SRM_SECRETS_PASSPHRASE or the persisted passphrase file (secrets.pass), the latter
+// letting the detached ephemeral units decrypt without an env var. It falls back to
+// environment variables when no passphrase is set.
 func resolveSecrets() secrets.Store {
-	if pass := os.Getenv("SRM_SECRETS_PASSPHRASE"); pass != "" {
+	if pass, ok := secrets.ResolvePassphrase(passFilePath()); ok {
 		if st, err := secrets.NewAgeFileStore(secretsPath(), pass); err == nil {
 			return st
 		}

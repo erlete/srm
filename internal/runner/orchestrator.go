@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -118,6 +119,21 @@ type Orchestrator interface {
 	// RefreshUnit re-applies the systemd drop-in (hardening + tool-cache env) to
 	// an already-installed runner and restarts it, without a full recreate.
 	RefreshUnit(ctx context.Context, org, name string) error
+
+	// RunnerLog writes a persistent runner's host log to w: on Linux the systemd
+	// journal for its unit (journalctl -u), or - when opts.Source is
+	// LogSourceAgent - the agent's own _diag log. On Windows (no journald) it
+	// always tails _diag. With opts.Follow set (journal source) it streams new
+	// lines until ctx is cancelled; a cancelled follow returns nil.
+	RunnerLog(ctx context.Context, org, name string, opts LogOptions, w io.Writer) error
+	// EphemeralLog writes an ephemeral slot lane's host log to w (its slot unit's
+	// journal on Linux, which also holds srm's per-cycle output; the supervisor +
+	// agent _diag on Windows).
+	EphemeralLog(ctx context.Context, org, slot string, opts LogOptions, w io.Writer) error
+	// EphemeralDiagDir returns the slot lane's agent _diag directory (per-job
+	// Worker_*/Runner_* logs). The durable job-log capture reads a finished job's
+	// log from here before the next cycle wipes it.
+	EphemeralDiagDir(org, slot string) string
 
 	// --- ephemeral JIT slots (a fixed lane that mints a fresh registration per job) ---
 
@@ -1370,6 +1386,13 @@ func (u *ubuntu) ephemeralSlotDir(org, slot string) string {
 	return filepath.Join(u.installRoot, org, ".ephemeral", slot)
 }
 
+// EphemeralDiagDir returns the slot lane's agent _diag directory, where the runner
+// writes its per-job Worker_*/Runner_* logs. The durable job-log capture reads it
+// after a job finishes and before the next cycle wipes it.
+func (u *ubuntu) EphemeralDiagDir(org, slot string) string {
+	return filepath.Join(u.ephemeralSlotDir(org, slot), "_diag")
+}
+
 // ephemeralControlDir is the root-owned 0700 directory holding the slot's jit-id
 // and jit-params - see ephemeralStateRoot for why it is separate from the slot tree.
 func (u *ubuntu) ephemeralControlDir(org, slot string) string {
@@ -1572,6 +1595,14 @@ func (u *ubuntu) RunJob(ctx context.Context, org, slot, jitConfig string) error 
 	// warm agent binaries. run.sh re-creates .runner/.credentials from the new JIT
 	// config each cycle, so removing stale ones here leaves no creds at rest between
 	// jobs.
+	//
+	// The wipe runs as REAL root (the unit has no User=; the drop to the per-org user
+	// happens below via setpriv), so it reclaims files a job left owned by a subuid or
+	// by root - e.g. a workflow "reclaim workspace" step that ran `chown` INSIDE a
+	// rootless-DinD container, which maps container-root to a host subuid. That makes a
+	// workflow-level reclaim step UNNECESSARY and HARMFUL under rootless DinD: srm
+	// already hands each job a clean, runner-owned _work. reclaimPath forces the removal
+	// if a plain RemoveAll is blocked (immutable bit, etc.).
 	resetDirs := []string{"_work", "_diag", "_home", ".runner", ".credentials", ".credentials_rsaparams"}
 	if u.opts.DinD {
 		// The rootless daemon's data-root (pulled images, built layers, build cache)
@@ -1579,9 +1610,13 @@ func (u *ubuntu) RunJob(ctx context.Context, org, slot, jitConfig string) error 
 		// clean-slate: it closes the race where a SIGKILL'd cycle skips post-job teardown
 		// and leaks images/cache/registry creds into the next (possibly cross-org) job.
 		resetDirs = append(resetDirs, ".docker-data")
+		// That same SIGKILL'd cycle also skips stopRootlessDocker, leaving fuse-overlayfs/
+		// overlay mounts under .docker-data. Detach them first, else os.RemoveAll fails
+		// EBUSY and the unit hot-loops on every cycle.
+		unmountStaleSlotMounts(ctx, dir)
 	}
 	for _, sub := range resetDirs {
-		if err := os.RemoveAll(filepath.Join(dir, sub)); err != nil {
+		if err := reclaimPath(ctx, filepath.Join(dir, sub)); err != nil {
 			return fmt.Errorf("reset %s: %w", sub, err)
 		}
 	}
@@ -1629,6 +1664,58 @@ func (u *ubuntu) RunJob(ctx context.Context, org, slot, jitConfig string) error 
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+// reclaimPath removes path and everything under it as REAL root. os.RemoveAll already
+// reclaims subuid/root-owned files (root has DAC_OVERRIDE), covering the common case
+// where a job left _work owned by a rootless-container subuid. If RemoveAll is still
+// blocked (e.g. an immutable bit), it forces the removal: clear immutable attrs, rm -rf,
+// then confirm the path is gone. A forced reclaim is logged to the cycle journal - it
+// signals a job that dirtied the workspace in a way a plain wipe could not undo (e.g. a
+// workflow "reclaim workspace" chown, which is unnecessary + harmful under rootless DinD).
+func reclaimPath(ctx context.Context, path string) error {
+	if err := os.RemoveAll(path); err == nil {
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "srm: forcing reclaim of %s (a prior job left files a plain wipe could not remove; a workflow 'reclaim workspace' chown is unnecessary and harmful under rootless DinD)\n", filepath.Base(path))
+	_ = run(ctx, "chattr", "-R", "-f", "-i", path) // best-effort; chattr may be absent
+	_ = run(ctx, "rm", "-rf", path)
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("still present after forced removal")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// unmountStaleSlotMounts lazily unmounts any mount points at or under root (deepest
+// first) that a SIGKILL'd prior cycle left behind - rootless dockerd's fuse-overlayfs/
+// overlay under .docker-data. Best-effort: the pre-job wipe is the real gate, but a live
+// mount makes os.RemoveAll fail EBUSY, so detach them first. Lazy (-l) so a still-busy
+// mount detaches on last use. A no-op where /proc/self/mountinfo is absent (e.g. tests).
+func unmountStaleSlotMounts(ctx context.Context, root string) {
+	b, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return
+	}
+	root = filepath.Clean(root)
+	prefix := root + "/"
+	var mnts []string
+	for _, line := range strings.Split(string(b), "\n") {
+		// mountinfo fields are space-separated; the mount point is field 5 (index 4).
+		// srm slot dirs are slugs with no spaces, so no octal-unescape is needed.
+		f := strings.Fields(line)
+		if len(f) < 5 {
+			continue
+		}
+		if mp := f[4]; mp == root || strings.HasPrefix(mp, prefix) {
+			mnts = append(mnts, mp)
+		}
+	}
+	sort.Slice(mnts, func(i, j int) bool { return len(mnts[i]) > len(mnts[j]) }) // deepest first
+	for _, mp := range mnts {
+		_ = run(ctx, "umount", "-l", mp)
+	}
 }
 
 // ephemeralJobEnv is the environment a setpriv-dropped ephemeral job runs with. The

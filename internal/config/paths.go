@@ -54,6 +54,10 @@ func EphemeralStateDir() string { return filepath.Join(DataRoot(), "ephemeral") 
 // StateManifestPath is the host state manifest (analog of /var/lib/srm/state.json).
 func StateManifestPath() string { return filepath.Join(DataRoot(), "state.json") }
 
+// JobLogsDir is the durable ephemeral job-log store (analog of /var/lib/srm/joblogs).
+// Root-owned: job code (the unprivileged runner user) must never read/write it.
+func JobLogsDir() string { return filepath.Join(DataRoot(), "joblogs") }
+
 // SelfExePath is the conventional installed location of the srm binary, used only as
 // a fallback when os.Executable() can't be resolved (analog of /usr/local/bin/srm).
 func SelfExePath() string { return filepath.Join(programFiles(), "srm", "srm.exe") }

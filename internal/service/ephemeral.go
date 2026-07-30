@@ -80,6 +80,46 @@ func (m *Manager) ListEphemeralSlots(ctx context.Context, orgFilter string) ([]E
 	return out, nil
 }
 
+// occupiedEphemeralSlots returns the set of slot ids already installed for an org
+// on THIS host (numeric ids only; srm only ever mints numeric slots). It backs the
+// additive allocator so a repeat create never clobbers existing lanes.
+func (m *Manager) occupiedEphemeralSlots(ctx context.Context, org string) (map[int]bool, error) {
+	host := m.orchestratorFor("")
+	units, err := host.ListEphemeralUnits(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Longest org name first so a shorter org that is a prefix of a longer one never
+	// mis-claims a lane (mirrors ListEphemeralSlots / parseEphemeralUnitName).
+	orgsByLen := append([]string{}, m.cfg.OrgNames()...)
+	sort.Slice(orgsByLen, func(i, j int) bool { return len(orgsByLen[i]) > len(orgsByLen[j]) })
+
+	occupied := map[int]bool{}
+	for _, svc := range units {
+		o, slot, ok := parseEphemeralUnitName(svc, orgsByLen)
+		if !ok || o != org {
+			continue
+		}
+		if n, cerr := strconv.Atoi(slot); cerr == nil {
+			occupied[n] = true
+		}
+	}
+	return occupied, nil
+}
+
+// allocateEphemeralSlots returns count NEW slot ids as the lowest free integers
+// starting at 1, skipping any id in occupied. A gap left by a removed lane is
+// reused before the range is extended, keeping slot ids dense.
+func allocateEphemeralSlots(occupied map[int]bool, count int) []string {
+	slots := make([]string, 0, count)
+	for id := 1; len(slots) < count; id++ {
+		if !occupied[id] {
+			slots = append(slots, strconv.Itoa(id))
+		}
+	}
+	return slots
+}
+
 // slotLess orders slot ids numerically when both parse as integers (so 2 sorts
 // before 10), falling back to lexicographic order otherwise.
 func slotLess(a, b string) bool {
@@ -103,6 +143,12 @@ func (m *Manager) CreateEphemeralRunners(ctx context.Context, spec DeploySpec, p
 	if spec.Count < 1 {
 		spec.Count = 1
 	}
+	// Fall back to the org's configured default labels when none were given
+	// (OrgConfig.DefaultLabels, previously a dead field; see defaultLabels). The
+	// default group is resolved just below via defaultGroupID.
+	if len(spec.Labels) == 0 {
+		spec.Labels = m.defaultLabels(org)
+	}
 
 	var groupID int64
 	if spec.Group != "" {
@@ -124,18 +170,25 @@ func (m *Manager) CreateEphemeralRunners(ctx context.Context, spec DeploySpec, p
 		return nil, err
 	}
 
-	slots := make([]string, 0, spec.Count)
+	// Additive allocation: pick the next spec.Count FREE slot ids for this org, so a
+	// repeat create ADDS lanes instead of clobbering slots 1..N. The old loop always
+	// reused 1..Count and EnsureEphemeralSlot tears down + os.RemoveAll's the slot
+	// dir, so "create 4" then "create 4" used to leave only 4 lanes. A gap freed by a
+	// removed lane is reused before the id range is extended.
+	occupied, err := m.occupiedEphemeralSlots(ctx, org)
+	if err != nil {
+		return nil, fmt.Errorf("enumerate existing ephemeral slots: %w", err)
+	}
+	alloc := allocateEphemeralSlots(occupied, spec.Count)
+
 	if m.cfg.DryRun {
-		for i := 1; i <= spec.Count; i++ {
-			slots = append(slots, strconv.Itoa(i))
-		}
-		return slots, nil
+		return alloc, nil
 	}
 
+	slots := make([]string, 0, spec.Count)
 	orch := m.orchestratorFor(org)
 	url := "https://github.com/" + org
-	for i := 1; i <= spec.Count; i++ {
-		slot := strconv.Itoa(i)
+	for i, slot := range alloc {
 		espec := runner.EphemeralSlotSpec{Org: org, Slot: slot, URL: url, Labels: spec.Labels, GroupID: groupID}
 		cerr := orch.EnsureEphemeralSlot(ctx, espec, dl)
 		if progress != nil {
@@ -143,7 +196,7 @@ func (m *Manager) CreateEphemeralRunners(ctx context.Context, spec DeploySpec, p
 			if cerr != nil {
 				msg = fmt.Sprintf("failed slot %s: %v", slot, cerr)
 			}
-			progress <- core.ProgressEvent{Index: i, Total: spec.Count, Message: msg, Err: cerr}
+			progress <- core.ProgressEvent{Index: i + 1, Total: spec.Count, Message: msg, Err: cerr}
 		}
 		if cerr != nil {
 			return slots, fmt.Errorf("create ephemeral slot %s: %w", slot, cerr)
@@ -246,6 +299,18 @@ func (m *Manager) defaultGroupID(org string) int64 {
 	return 1
 }
 
+// defaultLabels resolves the custom labels applied to a runner when the caller
+// passed none: the org's configured DefaultLabels (nil if unset or unknown org).
+// Wiring this is what makes OrgConfig.DefaultLabels actually take effect - it was
+// written by onboard but never read at runtime until now. Shared by the persistent
+// and ephemeral create paths.
+func (m *Manager) defaultLabels(org string) []string {
+	if oc, ok := m.cfg.Org(org); ok {
+		return oc.DefaultLabels
+	}
+	return nil
+}
+
 // validSlot reports whether s is a numeric slot id - guards the root os.RemoveAll
 // in the orchestrator against a traversal like "../../x" reaching it via filepath.Join.
 func validSlot(s string) bool {
@@ -303,8 +368,9 @@ func (m *Manager) RunCycle(ctx context.Context, org, slot string) error {
 	if len(labels) == 0 {
 		labels = []string{"self-hosted"}
 	}
+	runnerName := runner.EphemeralRunnerName(org, slot, cycleNonce())
 	jit, err := c.GenerateJITConfig(ctx, org, ghub.JITRequest{
-		Name:       runner.EphemeralRunnerName(org, slot, cycleNonce()),
+		Name:       runnerName,
 		GroupID:    gid,
 		Labels:     labels,
 		WorkFolder: "_work",
@@ -320,7 +386,12 @@ func (m *Manager) RunCycle(ctx context.Context, org, slot string) error {
 		return fmt.Errorf("record jit id: %w", err)
 	}
 
+	startedAt := time.Now()
 	runErr := orch.RunJob(ctx, org, slot, jit.EncodedJITConfig)
+	// Durable job-log capture (item 8 Part A): copy this job's _diag log to the
+	// root-owned store BEFORE the next cycle (or a teardown) wipes _diag. Best-effort;
+	// runs whether the job passed or failed, so a failed run's log is captured too.
+	m.captureJobLog(org, slot, runnerName, jit.RunnerID, startedAt, time.Now(), runErr)
 
 	// Decide the registration's fate by its STATE, not run.sh's exit code (which can
 	// be 0 even on a config failure). A real job auto-deregisters:

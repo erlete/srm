@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 
@@ -17,8 +19,112 @@ func newRunnersCmd() *cobra.Command {
 		Use:   "runners",
 		Short: "Create, list, and delete self-hosted runners",
 	}
-	cmd.AddCommand(newRunnersListCmd(), newRunnersCreateCmd(), newRunnersDeleteCmd(), newRunnersDestroyCmd(), newRunnersRefreshCmd(), newRunnersUpgradeCmd())
+	cmd.AddCommand(newRunnersListCmd(), newRunnersCreateCmd(), newRunnersDeleteCmd(), newRunnersDestroyCmd(), newRunnersRefreshCmd(), newRunnersUpgradeCmd(), newRunnersLogsCmd())
 	return cmd
+}
+
+// newRunnersLogsCmd streams a runner's host logs from THIS machine: a persistent
+// runner by name, or an ephemeral slot lane by --slot. On Linux the default source
+// is the systemd journal for the unit (journalctl -u); --source agent tails the
+// runner agent's own _diag logs. --follow streams new lines until interrupted
+// (journald source). Logs live on the runner's own host, so the command must run
+// there (and, for a system unit's journal, as root).
+func newRunnersLogsCmd() *cobra.Command {
+	var (
+		follow    bool
+		lines     int
+		source    string
+		ephemeral bool
+		slot      string
+	)
+	c := &cobra.Command{
+		Use:   "logs [name]",
+		Short: "Stream a runner's host logs - persistent (by name) or an --ephemeral slot (by --slot), on THIS host",
+		Long: "Streams a runner's host logs from the machine it runs on. For a persistent " +
+			"runner pass its name; for an ephemeral lane pass --ephemeral --slot N. The default " +
+			"source is the systemd journal for the unit (journalctl -u); --source agent tails the " +
+			"actions/runner agent's own _diag logs instead. --follow keeps streaming new lines " +
+			"until interrupted (journald source; Ctrl-C to stop). Reading a system unit's journal " +
+			"needs root. Use --org to disambiguate a runner name that exists in several orgs.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			switch source {
+			case "", service.LogSourceJournal, service.LogSourceAgent:
+			default:
+				return fmt.Errorf("--source must be %q or %q", service.LogSourceJournal, service.LogSourceAgent)
+			}
+			mgr, closeLog, err := buildManager()
+			if err != nil {
+				return err
+			}
+			defer closeLog()
+			if err := requireOrgs(mgr); err != nil {
+				return err
+			}
+
+			opts := service.LogOptions{Lines: lines, Follow: follow, Source: source}
+
+			// --follow needs a cancellable context so Ctrl-C ends the stream cleanly
+			// (journalctl -f otherwise blocks forever).
+			ctx := context.Background()
+			if follow {
+				var stop context.CancelFunc
+				ctx, stop = signal.NotifyContext(context.Background(), os.Interrupt)
+				defer stop()
+			}
+
+			// Ephemeral lanes are addressed by org + slot id, never by runner name.
+			if ephemeral {
+				if len(args) != 0 {
+					return fmt.Errorf("--ephemeral streams a slot by --slot, not a runner name")
+				}
+				if slot == "" {
+					return fmt.Errorf("--slot is required with --ephemeral")
+				}
+				org, err := targetOrg(mgr)
+				if err != nil {
+					return err
+				}
+				return mgr.EphemeralLogs(ctx, org, slot, opts, os.Stdout)
+			}
+			if slot != "" {
+				return fmt.Errorf("--slot is only valid with --ephemeral")
+			}
+			if len(args) != 1 {
+				return fmt.Errorf("a runner name is required (or use --ephemeral --slot N)")
+			}
+			name := args[0]
+
+			// Resolve the owning org unless --org forces one: names are unique within
+			// an org but can collide across orgs, so never guess.
+			org := flagOrg
+			if org == "" {
+				orgs, errs := mgr.FindRunnerOrgsByName(ctx, name)
+				for _, o := range mgr.OrgNames() {
+					if e := errs[o]; e != nil {
+						fmt.Printf("WARN %s: %v\n", o, e)
+					}
+				}
+				switch len(orgs) {
+				case 0:
+					return fmt.Errorf("no runner named %q in any configured org (use --org to force)", name)
+				case 1:
+					org = orgs[0]
+				default:
+					return fmt.Errorf("runner %q exists in multiple orgs (%s) - specify --org", name, strings.Join(orgs, ", "))
+				}
+			} else if _, ok := mgr.Config().Org(org); !ok {
+				return fmt.Errorf("org %q not configured", org)
+			}
+			return mgr.RunnerLogs(ctx, org, name, opts, os.Stdout)
+		},
+	}
+	c.Flags().BoolVarP(&follow, "follow", "f", false, "stream new log lines until interrupted (journald source)")
+	c.Flags().IntVarP(&lines, "lines", "n", 200, "number of recent lines to show")
+	c.Flags().StringVar(&source, "source", "journal", "log source: journal (the systemd unit) or agent (the runner's _diag logs)")
+	c.Flags().BoolVar(&ephemeral, "ephemeral", false, "stream an ephemeral slot lane's logs (by --slot) instead of a persistent runner")
+	c.Flags().StringVar(&slot, "slot", "", "ephemeral slot id (with --ephemeral)")
+	return c
 }
 
 func newRunnersUpgradeCmd() *cobra.Command {

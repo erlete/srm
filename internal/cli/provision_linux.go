@@ -36,7 +36,7 @@ pnpm --version || true
 
 func newProvisionCmd() *cobra.Command {
 	var apt, seed, seedNode string
-	var node, corepack bool
+	var node, corepack, rootlessDinD bool
 	c := &cobra.Command{
 		Use:   "provision",
 		Short: "Apply the host dependency layer (apt packages, Node, setup scripts) - run as root on the target",
@@ -84,11 +84,30 @@ func newProvisionCmd() *cobra.Command {
 				man.ToolCacheSeeds = append(man.ToolCacheSeeds, "node@"+v)
 			}
 
-			if man.Empty() {
-				return fmt.Errorf("nothing to provision - set host.aptPackages in config or pass --apt/--node/--corepack")
+			ctx := context.Background()
+
+			// Rootless-DinD prerequisites (FP1): the one-command install of Docker CE +
+			// rootless extras, uidmap, fuse-overlayfs, slirp4netns, and the userns
+			// sysctls. Idempotent. Re-probe readiness afterwards so the fix is visible.
+			if rootlessDinD {
+				fmt.Println("installing rootless-DinD prerequisites (docker-ce + rootless-extras, uidmap, fuse-overlayfs, slirp4netns, userns sysctls)…")
+				if err := mgr.ProvisionRootlessDinD(ctx); err != nil {
+					return fmt.Errorf("rootless-DinD prereqs: %w", err)
+				}
+				fmt.Println("rootless-DinD prerequisites applied")
+				printDinDReadiness(mgr.DinDReadiness(mgr.OrgNames()))
+				if !mgr.Config().Docker.RootlessDinD {
+					fmt.Println("note: set docker.rootlessDinD: true in config to enable the per-job rootless daemon on ephemeral lanes.")
+				}
 			}
 
-			ctx := context.Background()
+			if man.Empty() {
+				if rootlessDinD {
+					return nil // DinD prereqs handled above; nothing else to provision
+				}
+				return fmt.Errorf("nothing to provision - set host.aptPackages in config or pass --apt/--node/--corepack/--rootless-dind")
+			}
+
 			if missing, derr := mgr.HostDrift(ctx, man); derr == nil {
 				if len(missing) == 0 {
 					fmt.Println("apt/scripts already present - applying anyway (idempotent)")
@@ -107,6 +126,7 @@ func newProvisionCmd() *cobra.Command {
 	c.Flags().StringVar(&apt, "apt", "", "comma-separated apt packages to install")
 	c.Flags().BoolVar(&node, "node", false, "install Node.js (NodeSource 22.x) into /usr/bin")
 	c.Flags().BoolVar(&corepack, "corepack", false, "enable corepack (pnpm/yarn shims)")
+	c.Flags().BoolVar(&rootlessDinD, "rootless-dind", false, "install the rootless-Docker prerequisites (docker-ce + rootless-extras, uidmap, fuse-overlayfs, slirp4netns, userns sysctls)")
 	c.Flags().StringVar(&seed, "seed", "", "comma-separated tool@version seeds for the shared tool cache (e.g. node@22.11.0,go@1.23.4,python@3.12.7)")
 	c.Flags().StringVar(&seedNode, "seed-node", "", "shorthand for --seed node@<ver> (comma-separated exact versions)")
 	return c

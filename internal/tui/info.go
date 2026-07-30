@@ -213,12 +213,15 @@ func healthInfo(t Theme, rep healthReport, host healthHost) (string, string) {
 	if rep.RetentionErr != nil {
 		retention = "unavailable - " + rep.RetentionErr.Error()
 	}
-	agent := "unknown (host tier not loaded)"
+	agent := "published version unresolved"
 	if rep.AgentOK {
 		agent = "published " + orQ(rep.AgentCurrent)
-		if rep.AgentBehind > 0 {
+		switch {
+		case rep.AgentBehind > 0:
 			agent += fmt.Sprintf("  ·  %d recorded runner(s) behind (u to upgrade)", rep.AgentBehind)
-		} else {
+		case rep.AgentTotal == 0:
+			agent += "  ·  no local runners recorded here"
+		default:
 			agent += "  ·  all recorded runners up to date"
 		}
 	}

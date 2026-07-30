@@ -42,10 +42,11 @@ const (
 	tabEphemeral
 	tabGroups
 	tabDrift
+	tabRuns
 	tabSettings
 )
 
-var tabNames = []string{"Health", "Persistent Runners", "Ephemeral Runners", "Groups", "Drift", "Settings"}
+var tabNames = []string{"Health", "Persistent Runners", "Ephemeral Runners", "Groups", "Drift", "Runs", "Settings"}
 
 // defaultAutoEvery is the auto-refresh interval when the operator opts in with `a`.
 const defaultAutoEvery = 15 * time.Second
@@ -76,6 +77,7 @@ type Model struct {
 	health    healthView
 	settings  settingsView
 	drift     driftView
+	runs      runsView
 	lifecycle lifecycleView
 
 	// Fused fleet snapshot (Persistent / Ephemeral / Drift). Loaded in two tiers.
@@ -98,6 +100,13 @@ type Model struct {
 	infoGroup           *service.GroupWithOrg
 	infoGroupRepos      []core.Repo
 	infoGroupReposState string // "", looking, loaded
+
+	// Full-screen scrollable Logs panel (opened with L on a runner/slot). The
+	// subject is held so the follow ticker can re-poll the same target.
+	logOpen    bool
+	logStatic  bool // the Logs panel is showing a static captured log (no follow)
+	log        logView
+	logSubject logSubject
 
 	// memHistory is a bounded per-runner/slot ring of recent live cgroup-memory
 	// samples (keyed via memKey*), appended on each host-tier merge and rendered as a
@@ -149,9 +158,11 @@ type Model struct {
 
 	uninstallForm *uninstallForm // uninstall Step-1 scope + toggles form (nil = closed)
 
-	onboardForm *onboardForm  // lifecycle onboard wizard (add an org; nil = closed)
-	restoreOpen bool          // lifecycle restore backup picker is open
+	onboardForm *onboardForm // lifecycle onboard wizard (add an org; nil = closed)
+	restoreOpen bool         // lifecycle restore backup picker is open
 	restore     restorePicker
+
+	manifestForm *manifestForm // lifecycle host-manifest editor (nil = closed)
 
 	// Repo-access picker (autocomplete multi-select) for a "selected" group.
 	pickerOpen bool
@@ -187,8 +198,10 @@ func New(ctx context.Context, mgr *service.Manager) Model {
 		health:      newHealthView(t),
 		settings:    newSettingsView(t),
 		drift:       newDriftView(t),
+		runs:        newRunsView(t),
 		lifecycle:   newLifecycleView(t),
 		info:        newInfoView(t),
+		log:         newLogView(t),
 		hostCapable: hostCapable(),
 		autoEvery:   defaultAutoEvery,
 		loading:     true,
@@ -214,6 +227,7 @@ func (m *Model) reloadCurrent() tea.Cmd {
 // switch, no reload), other tabs load on entry. It also closes the Information panel.
 func (m *Model) enterTab() tea.Cmd {
 	m.infoOpen = false
+	m.logOpen = false
 	if fleetTab(m.tab) {
 		if m.fleetLoaded {
 			m.layout()
@@ -234,6 +248,8 @@ func (m Model) loadCurrent() tea.Cmd {
 		return loadGroupsCmd(m.ctx, m.mgr, m.orgFilter)
 	case tabHealth:
 		return loadHealthCmd(m.ctx, m.mgr, m.orgFilter)
+	case tabRuns:
+		return loadRunsCmd(m.mgr)
 	case tabSettings:
 		return loadSettingsCmd(m.mgr)
 	default:
@@ -273,6 +289,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// The onboard wizard captures the loop while open.
 	if m.onboardForm != nil {
 		return m.updateOnboardForm(msg)
+	}
+	// The host-manifest editor captures the loop while open.
+	if m.manifestForm != nil {
+		return m.updateManifestForm(msg)
 	}
 
 	switch msg := msg.(type) {
@@ -363,6 +383,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.health.setReports(reps, msg.host)
 		m.setLoadStatus(len(reps), "org", msg.err)
+		return m, nil
+
+	case runsMsg:
+		m.loading = false
+		hist := msg.history
+		if len(m.orgVisible) > 0 {
+			hist = hist[:0:0]
+			for _, r := range msg.history {
+				if m.orgVisible[r.Org] {
+					hist = append(hist, r)
+				}
+			}
+		}
+		m.runs.setData(hist, msg.err)
+		if msg.err != nil {
+			m.status, m.stErr = msg.err.Error(), true
+		} else {
+			m.setLoadStatus(len(hist), "run", nil)
+		}
 		return m, nil
 
 	case actionMsg:
@@ -468,6 +507,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.infoGroupReposState = "loaded"
 		m.rebuildGroupInfo()
 		return m, nil
+
+	case logsMsg:
+		// Ignore a snapshot for a since-closed panel or a switched subject.
+		if !m.logOpen || msg.subj != m.logSubject {
+			return m, nil
+		}
+		content := msg.content
+		if msg.err != nil {
+			if content != "" {
+				content += "\n\n"
+			}
+			content += m.theme.Offline.Render("log read failed: " + msg.err.Error())
+		}
+		m.log.set(content)
+		if m.log.follow {
+			return m, logTickCmd() // schedule the next poll (serialized: no overlap)
+		}
+		return m, nil
+
+	case logTickMsg:
+		if !m.logOpen || !m.log.follow {
+			return m, nil // panel closed or follow paused - stop the loop
+		}
+		return m, logsCmd(m.ctx, m.mgr, m.logSubject)
 
 	case runnerGroupsMsg:
 		m.loading = false
@@ -583,6 +646,34 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		var cmd tea.Cmd
 		m.info, cmd = m.info.update(msg)
+		return m, cmd
+	}
+
+	// The Logs panel captures keys: L/esc/q close, f toggles follow, everything
+	// else scrolls. Toggling follow on pins to the tail and arms the re-poll ticker.
+	if m.logOpen {
+		switch {
+		case msg.String() == "ctrl+c":
+			return m, tea.Quit
+		case key.Matches(msg, m.keys.Logs), key.Matches(msg, m.keys.Esc), msg.String() == "q":
+			m.logOpen = false
+			m.log.follow = false
+			m.logStatic = false
+			return m, nil
+		case msg.String() == "f":
+			if m.logStatic {
+				m.status, m.stErr = "follow is not available for a captured (static) log", false
+				return m, nil
+			}
+			m.log.follow = !m.log.follow
+			if m.log.follow {
+				m.log.vp.GotoBottom()
+				return m, logTickCmd()
+			}
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.log, cmd = m.log.update(msg)
 		return m, cmd
 	}
 
@@ -751,6 +842,8 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.onEnter()
 	case key.Matches(msg, m.keys.Info):
 		return m.openInfo()
+	case key.Matches(msg, m.keys.Logs):
+		return m.openLogs()
 	case key.Matches(msg, m.keys.Esc):
 		return m.onEsc()
 	case key.Matches(msg, m.keys.Fix):
@@ -796,11 +889,11 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.New):
 		switch m.tab {
 		case tabPersistent:
-			m.form = newCreateForm(m.mgr.OrgNames())
+			m.form = newCreateForm(m.mgr.OrgNames(), m.orgDefaults)
 			m.formOpen = true
 			return m, m.form.form.Init()
 		case tabEphemeral:
-			m.form = newEphemeralForm(m.mgr.OrgNames())
+			m.form = newEphemeralForm(m.mgr.OrgNames(), m.orgDefaults)
 			m.formOpen = true
 			return m, m.form.form.Init()
 		case tabGroups:
@@ -815,7 +908,7 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Edit):
 		switch m.tab {
 		case tabSettings:
-			m.setForm = newSettingsForm(m.mgr.ResourceSettings())
+			m.setForm = newSettingsForm(m.mgr.ResourceSettings(), m.mgr.HostPolicy())
 			return m, m.setForm.form.Init()
 		case tabGroups:
 			return m.startEditGroup()
@@ -841,6 +934,8 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.groups, cmd = m.groups.update(msg)
 	case tabDrift:
 		m.drift, cmd = m.drift.update(msg)
+	case tabRuns:
+		m.runs, cmd = m.runs.update(msg)
 	case tabSettings:
 		// up/down drive the Lifecycle menu in the right-hand panel.
 		switch {
@@ -878,6 +973,17 @@ func (m Model) actionOrg() string {
 	return m.orgFilter
 }
 
+// orgDefaults is the create-form resolver (orgDefaults type): it reads the selected
+// org's configured runner defaults (labels + group id) live from config so the form
+// hints track the current file. Zero values for an unknown org. m.mgr is a pointer,
+// so Config() always reflects the latest reload.
+func (m Model) orgDefaults(org string) ([]string, int64) {
+	if oc, ok := m.mgr.Config().Org(org); ok {
+		return oc.DefaultLabels, oc.DefaultGroupID
+	}
+	return nil, 0
+}
+
 // visibleRunners / visibleSlots drop rows whose org is hidden by the org filter.
 func (m Model) visibleRunners(rs []service.FusedRunner) []service.FusedRunner {
 	if len(m.orgVisible) == 0 {
@@ -911,7 +1017,7 @@ const memHistoryMax = 30
 // memKeyRunner / memKeySlot namespace the memHistory keys so a runner and a slot can
 // never collide (org + name, each in its own "r"/"s" space).
 func memKeyRunner(r service.FusedRunner) string { return "r\x00" + r.Org + "\x00" + r.Runner.Name }
-func memKeySlot(s service.FusedSlot) string      { return "s\x00" + s.Org + "\x00" + s.Slot }
+func memKeySlot(s service.FusedSlot) string     { return "s\x00" + s.Org + "\x00" + s.Slot }
 
 // memHistoryFor returns the recorded samples for a key (nil when none / not yet
 // sampled), safe on a nil map.
@@ -1003,6 +1109,11 @@ func (m Model) runLifecycle() (tea.Model, tea.Cmd) {
 			backupOp())
 	case lifeProvision:
 		return m.startProvision()
+	case lifeManifest:
+		// Host dependency manifest editor: edits Config.Host, then persists it.
+		// `srm provision` (host op) applies it - editing is not itself a host op.
+		m.manifestForm = newManifestForm(m.mgr.HostManifest())
+		return m, m.manifestForm.form.Init()
 	case lifeUninstall:
 		// Step 1: collect scope + Keep*/Force/Purge; the form's completion runs the
 		// dry-run blast-radius preview, which then escalates the destructive gates.
@@ -1011,8 +1122,10 @@ func (m Model) runLifecycle() (tea.Model, tea.Cmd) {
 	case lifeOnboard:
 		// In-TUI onboarding: the same org-credential form as `srm init`, then a
 		// save + reload + auth check. The .pem placeholder is seeded from the config dir.
-		m.onboardForm = newOnboardForm(filepath.Dir(m.mgr.ConfigPath()))
+		m.onboardForm = newOnboardForm(filepath.Dir(m.mgr.ConfigPath()), m.mgr.HasSecretsPassphrase())
 		return m, m.onboardForm.form.Init()
+	case lifeEditOrg:
+		return m.startEditOrg()
 	case lifeRestore:
 		m.loading = true
 		m.status = "scanning for config backups…"
@@ -1103,6 +1216,16 @@ func (m Model) openInfo() (tea.Model, tea.Cmd) {
 		return m, nil
 	case tabDrift:
 		return m.openDriftInfo()
+	case tabRuns:
+		run, ok := m.runs.selected()
+		if !ok {
+			return m, nil
+		}
+		title, body := runInfo(m.theme, run)
+		m.info.set(title, body)
+		m.infoOpen = true
+		m.layout()
+		return m, nil
 	case tabGroups:
 		g, ok := m.groups.selected()
 		if !ok {
@@ -1185,6 +1308,93 @@ func (m Model) openDriftInfo() (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// openLogs opens the full-screen Logs panel for the selected runner or ephemeral
+// slot and kicks the first (snapshot) fetch. Logs live on the runner's own host,
+// so it is gated on an elevated on-host session; a persistent runner must also be
+// local (a remote runner has no logs here). No-op on tabs without a log subject.
+func (m Model) openLogs() (tea.Model, tea.Cmd) {
+	if !m.hostCapable {
+		m.status, m.stErr = "logs need root on the runner host (remote / non-elevated session)", true
+		return m, nil
+	}
+	switch m.tab {
+	case tabPersistent:
+		r, ok := m.runners.selected()
+		if !ok {
+			return m, nil
+		}
+		if !r.Local {
+			m.status, m.stErr = "logs are only available on the runner's own host", true
+			return m, nil
+		}
+		return m.beginLogs(logSubject{org: r.Org, name: r.Runner.Name}, r.Runner.Name+"  ·  "+r.Org)
+	case tabEphemeral:
+		s, ok := m.ephemeral.selected()
+		if !ok {
+			return m, nil
+		}
+		return m.beginLogs(logSubject{org: s.Org, slot: s.Slot, isSlot: true}, "slot "+s.Slot+"  ·  "+s.Org)
+	case tabDrift:
+		e, ok := m.drift.selected()
+		if !ok {
+			return m, nil
+		}
+		if e.isSlot {
+			slot := strings.TrimPrefix(e.name, "slot ")
+			return m.beginLogs(logSubject{org: e.org, slot: slot, isSlot: true}, "slot "+slot+"  ·  "+e.org)
+		}
+		// A persistent drift row: only openable when the runner is local.
+		for _, r := range m.snap.Runners {
+			if r.Org == e.org && r.Runner.Name == e.name {
+				if !r.Local {
+					m.status, m.stErr = "logs are only available on the runner's own host", true
+					return m, nil
+				}
+				return m.beginLogs(logSubject{org: e.org, name: e.name}, e.name+"  ·  "+e.org)
+			}
+		}
+		return m, nil
+	case tabRuns:
+		run, ok := m.runs.selected()
+		if !ok {
+			return m, nil
+		}
+		if !run.HasLog {
+			m.status, m.stErr = "no captured log for this run", false
+			return m, nil
+		}
+		b, rerr := m.mgr.JobLogStore().ReadLog(run)
+		if rerr != nil {
+			m.status, m.stErr = "read log: "+rerr.Error(), true
+			return m, nil
+		}
+		// A captured log is static content (no live host source), so no follow ticker.
+		m.logStatic = true
+		m.logSubject = logSubject{}
+		m.log.follow = false
+		m.log.title = run.RunnerName + "  ·  " + run.Org + " slot " + run.Slot
+		m.log.set(string(b))
+		m.logOpen = true
+		m.layout()
+		return m, nil
+	default:
+		m.status, m.stErr = "press L on a runner or ephemeral slot", false
+		return m, nil
+	}
+}
+
+// beginLogs opens the panel for a subject, resets follow, and returns the snapshot
+// fetch command.
+func (m Model) beginLogs(subj logSubject, title string) (tea.Model, tea.Cmd) {
+	m.logSubject = subj
+	m.log.follow = false
+	m.log.title = title
+	m.log.set(m.theme.Faint.Render("loading logs…"))
+	m.logOpen = true
+	m.layout()
+	return m, logsCmd(m.ctx, m.mgr, subj)
 }
 
 // rebuildRunnerInfo / rebuildGroupInfo re-render the info content from the stored
@@ -1351,6 +1561,39 @@ func (m Model) startProvision() (tea.Model, tea.Cmd) {
 	return m, planProvisionCmd(m.ctx, m.mgr, m.theme)
 }
 
+// startEditOrg opens the prefilled org form for a single resolved org, reusing the
+// onboard save path (a re-key by paste is stored encrypted; keep/path leave the key
+// untouched). The target is the sole configured org, or - when several are configured
+// - the one the org display filter (o) is narrowed to; otherwise it points the user at
+// the filter or the `srm config edit-org --org` CLI mirror rather than guessing.
+func (m Model) startEditOrg() (tea.Model, tea.Cmd) {
+	names := m.mgr.OrgNames()
+	if len(names) == 0 {
+		m.status, m.stErr = "no orgs configured - onboard one first", true
+		return m, nil
+	}
+	cand := names
+	if len(m.orgVisible) > 0 {
+		cand = cand[:0:0]
+		for _, n := range names {
+			if m.orgVisible[n] {
+				cand = append(cand, n)
+			}
+		}
+	}
+	if len(cand) != 1 {
+		m.status, m.stErr = "select one org first (press o to filter) or use `srm config edit-org --org <name>`", true
+		return m, nil
+	}
+	oc, ok := m.mgr.Config().Org(cand[0])
+	if !ok {
+		m.status, m.stErr = "org "+cand[0]+" not found", true
+		return m, nil
+	}
+	m.onboardForm = newEditOrgForm(*oc, filepath.Dir(m.mgr.ConfigPath()), m.mgr.HasSecretsPassphrase())
+	return m, m.onboardForm.form.Init()
+}
+
 // startRecreate: confirm, then destroy + recreate the selection (or cursor row)
 // with the same config. Persistent and Ephemeral only.
 func (m Model) startRecreate() (tea.Model, tea.Cmd) {
@@ -1406,8 +1649,8 @@ func (m Model) onEsc() (tea.Model, tea.Cmd) {
 // idleForAuto reports whether an auto-refresh tick may load now: nothing modal,
 // no op in flight, not filtering, and not already loading.
 func (m Model) idleForAuto() bool {
-	return !m.loading && !m.modalOpen && !m.typedOpen && !m.previewOpen && !m.formOpen && !m.infoOpen &&
-		m.setForm == nil && m.retForm == nil && m.groupForm == nil && m.runnerEdit == nil && m.upgradeForm == nil && m.uninstallForm == nil && m.onboardForm == nil && !m.restoreOpen && !m.pickerOpen && !m.orgPickOpen && !m.op.open && !m.creating && !m.activeFiltering()
+	return !m.loading && !m.modalOpen && !m.typedOpen && !m.previewOpen && !m.formOpen && !m.infoOpen && !m.logOpen &&
+		m.setForm == nil && m.retForm == nil && m.groupForm == nil && m.runnerEdit == nil && m.upgradeForm == nil && m.uninstallForm == nil && m.onboardForm == nil && m.manifestForm == nil && !m.restoreOpen && !m.pickerOpen && !m.orgPickOpen && !m.op.open && !m.creating && !m.activeFiltering()
 }
 
 // runConfirmed runs the yes/no-confirmed action: a pending op (through the op
@@ -1531,7 +1774,7 @@ func (m Model) askDestroySlot() (tea.Model, tea.Cmd) {
 // filter. Every list view does; Settings/Drift/Lifecycle (snapshots/menus) vary.
 func (m Model) filterableTab() bool {
 	switch m.tab {
-	case tabPersistent, tabEphemeral, tabGroups, tabHealth, tabDrift:
+	case tabPersistent, tabEphemeral, tabGroups, tabHealth, tabDrift, tabRuns:
 		return true
 	default:
 		return false
@@ -1551,6 +1794,8 @@ func (m Model) activeFiltering() bool {
 		return m.health.filtering()
 	case tabDrift:
 		return m.drift.filtering()
+	case tabRuns:
+		return m.runs.filtering()
 	default:
 		return false
 	}
@@ -1569,6 +1814,8 @@ func (m *Model) startFilter() tea.Cmd {
 		return m.health.startFilter()
 	case tabDrift:
 		return m.drift.startFilter()
+	case tabRuns:
+		return m.runs.startFilter()
 	default:
 		return nil
 	}
@@ -1587,6 +1834,8 @@ func (m *Model) stopFilter(clear bool) {
 		m.health.stopFilter(clear)
 	case tabDrift:
 		m.drift.stopFilter(clear)
+	case tabRuns:
+		m.runs.stopFilter(clear)
 	}
 }
 
@@ -1604,6 +1853,8 @@ func (m Model) updateActiveFilter(msg tea.Msg) (Model, tea.Cmd) {
 		m.health, cmd = m.health.updateFilter(msg)
 	case tabDrift:
 		m.drift, cmd = m.drift.updateFilter(msg)
+	case tabRuns:
+		m.runs, cmd = m.runs.updateFilter(msg)
 	}
 	return m, cmd
 }
@@ -1702,12 +1953,41 @@ func (m Model) updateSettingsForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.setForm.form.State {
 	case huh.StateCompleted:
 		s := m.setForm.settings()
+		pol := m.setForm.policy()
 		m.setForm = nil
 		m.loading = true
 		m.status = "saving…"
-		return m, saveSettingsCmd(m.mgr, s)
+		return m, saveSettingsCmd(m.mgr, s, pol)
 	case huh.StateAborted:
 		m.setForm = nil
+		m.status, m.stErr = "edit cancelled", false
+		return m, nil
+	}
+	return m, cmd
+}
+
+// updateManifestForm drives the host-manifest editor. On completion it persists the
+// edited manifest to config; on abort it just closes. `srm provision` (the Provision
+// lifecycle op) is what applies it to the host - editing only writes config.
+func (m Model) updateManifestForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = ws.Width, ws.Height
+		m.help.SetWidth(ws.Width)
+		m.layout()
+	}
+	fm, cmd := m.manifestForm.form.Update(msg)
+	if f, ok := fm.(*huh.Form); ok {
+		m.manifestForm.form = f
+	}
+	switch m.manifestForm.form.State {
+	case huh.StateCompleted:
+		man := m.manifestForm.manifest()
+		m.manifestForm = nil
+		m.loading = true
+		m.status = "saving…"
+		return m, saveManifestCmd(m.mgr, man)
+	case huh.StateAborted:
+		m.manifestForm = nil
 		m.status, m.stErr = "edit cancelled", false
 		return m, nil
 	}
@@ -1811,12 +2091,14 @@ func (m Model) updateOnboardForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch m.onboardForm.form.State {
 	case huh.StateCompleted:
-		oc := m.onboardForm.fields.ToOrgConfig()
+		fields := m.onboardForm.fields
+		edit := m.onboardForm.edit
+		oc := fields.ToOrgConfig()
 		m.onboardForm = nil
 		m.mgr.UpsertOrg(oc)
 		m.loading = true
 		m.status = "saving org " + oc.Name + "…"
-		return m, onboardSaveCmd(m.ctx, m.mgr, oc.Name)
+		return m, onboardSaveCmd(m.ctx, m.mgr, oc.Name, fields, edit)
 	case huh.StateAborted:
 		m.onboardForm = nil
 		m.status, m.stErr = "onboarding cancelled", false
@@ -1898,9 +2180,11 @@ func (m *Model) layout() {
 	m.runners.setSize(m.width, listH)
 	m.ephemeral.setSize(m.width, listH)
 	m.groups.setSize(m.width, bodyH-1) // detail line
+	m.runs.setSize(m.width, bodyH-1)   // detail line
 	m.health.setSize(m.width, bodyH)
 	m.settings.setSize(m.width, bodyH)
 	m.info.setSize(m.width, bodyH)
+	m.log.setSize(m.width, bodyH)
 	// The Drift table shares the body with a class strip + a couple of context rows.
 	driftH := bodyH - 4
 	if driftH < 3 {

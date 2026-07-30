@@ -32,27 +32,42 @@ func newInitCmd() *cobra.Command {
 // prompt) and returns the resulting OrgConfig. Shared by `srm init` and the
 // first-run wizard. The form itself lives in internal/setup so the TUI onboard
 // wizard collects identical fields.
-func collectOrg(defaults setup.OrgFields) (config.OrgConfig, error) {
+func collectOrg(defaults setup.OrgFields, edit bool) (config.OrgConfig, error) {
 	f := defaults
-	if err := setup.OrgForm(&f, filepath.Dir(systemConfigPath)).Run(); err != nil {
+	_, passKnown := secrets.ResolvePassphrase(passFilePath())
+	if err := setup.OrgForm(&f, filepath.Dir(systemConfigPath), passKnown, edit).Run(); err != nil {
 		return config.OrgConfig{}, err
 	}
 	oc := f.ToOrgConfig()
 
-	// Optionally encrypt the private key into the age secrets store so the .pem
-	// no longer needs to live on disk. Only offered when a passphrase is set.
-	if os.Getenv("SRM_SECRETS_PASSPHRASE") != "" {
-		var importKey bool
-		if err := huh.NewForm(huh.NewGroup(
-			huh.NewConfirm().
-				Title("Encrypt the private key into srm's secrets file (removes the .pem dependency)?").
-				Value(&importKey),
-		)).Run(); err != nil {
+	switch f.KeyMode {
+	case setup.KeyModeKeep:
+		// Edit that keeps the current key: nothing to store (ToOrgConfig preserved the
+		// existing PrivateKeyPath / store reference).
+	case setup.KeyModePaste:
+		// Paste mode always stores encrypted - there is no .pem to reference. The
+		// passphrase is the known one, or the one just created in the form (f.Passphrase),
+		// which EncryptAppKey persists root-only so the background units can decrypt.
+		if _, err := secrets.EncryptAppKey(secretsPath(), passFilePath(), oc.Name, f.KeyPaste, f.Passphrase); err != nil {
 			return config.OrgConfig{}, err
 		}
-		if importKey {
-			if err := importPrivateKey(&oc); err != nil {
+		fmt.Printf("Stored the App private key encrypted at %s (key app_key:%s).\n", secretsPath(), oc.Name)
+	default:
+		// Path mode: optionally encrypt the referenced .pem into the secrets store so
+		// the file no longer needs to live on disk. Only offered when a passphrase exists.
+		if passKnown {
+			var importKey bool
+			if err := huh.NewForm(huh.NewGroup(
+				huh.NewConfirm().
+					Title("Encrypt the private key into srm's secrets file (removes the .pem dependency)?").
+					Value(&importKey),
+			)).Run(); err != nil {
 				return config.OrgConfig{}, err
+			}
+			if importKey {
+				if err := importPrivateKey(&oc); err != nil {
+					return config.OrgConfig{}, err
+				}
 			}
 		}
 	}
@@ -65,7 +80,7 @@ func runInit() error {
 		return err
 	}
 
-	oc, err := collectOrg(setup.DefaultOrgFields())
+	oc, err := collectOrg(setup.DefaultOrgFields(), false)
 	if err != nil {
 		return err
 	}
@@ -106,7 +121,7 @@ func firstRunSetup() error {
 	}
 
 	for {
-		oc, err := collectOrg(setup.DefaultOrgFields())
+		oc, err := collectOrg(setup.DefaultOrgFields(), false)
 		if err != nil {
 			// huh returns ErrUserAborted on ctrl+c / esc - treat as a clean cancel.
 			if errors.Is(err, huh.ErrUserAborted) {
@@ -161,11 +176,7 @@ func importPrivateKey(oc *config.OrgConfig) error {
 	if err != nil {
 		return fmt.Errorf("read key for import: %w", err)
 	}
-	st, err := secrets.NewAgeFileStore(secretsPath(), os.Getenv("SRM_SECRETS_PASSPHRASE"))
-	if err != nil {
-		return err
-	}
-	if err := st.Set("app_key:"+oc.Name, string(data)); err != nil {
+	if _, err := secrets.EncryptAppKey(secretsPath(), passFilePath(), oc.Name, string(data), ""); err != nil {
 		return err
 	}
 	oc.PrivateKeyPath = "" // now resolved from the secrets store

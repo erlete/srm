@@ -135,22 +135,33 @@ func NewTheme() Theme {
 }
 
 // fillWidth grows the LAST column so the table's rows - and the full-width
-// selection highlight + header rule - span the terminal width w. bubbles renders
-// every cell with one column of horizontal padding per side, so a row is
-// sum(col.Width)+2*len(cols) wide; the leftover is handed to the trailing column
-// (slack sits at the right edge, the natural full-width look).
+// fillWidth stretches a table's columns to span the terminal width w. bubbles
+// renders every cell with one column of horizontal padding per side, so a row is
+// sum(col.Width)+2*len(cols) wide. The slack is distributed PROPORTIONALLY to each
+// column's base width, so every column grows relative to its share and the row
+// spans the full width - rather than dumping all leftover into the trailing column
+// (which left one lone wide column and a ragged look). The rounding remainder tops
+// up the last column so the row is exactly w wide.
 func fillWidth(cols []table.Column, w int) []table.Column {
 	if len(cols) == 0 || w <= 0 {
 		return cols
 	}
 	out := make([]table.Column, len(cols))
 	copy(out, cols)
-	used := 2 * len(cols)
+	base := 0
 	for _, c := range cols {
-		used += c.Width
+		base += c.Width
 	}
-	if extra := w - used; extra > 0 {
-		out[len(out)-1].Width += extra
+	extra := w - (base + 2*len(cols))
+	if extra <= 0 || base <= 0 {
+		return out
 	}
+	given := 0
+	for i := range out {
+		share := extra * cols[i].Width / base
+		out[i].Width += share
+		given += share
+	}
+	out[len(out)-1].Width += extra - given
 	return out
 }

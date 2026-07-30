@@ -82,17 +82,30 @@ func TestWheelScrollsSettingsLifecycle(t *testing.T) {
 func TestTabBarClickLaterTab(t *testing.T) {
 	m := sizedModel(t)
 	cx := 0
-	for i := 0; i < 4; i++ { // width of Health..Groups (tab 0 is active)
-		if tab(i) == m.tab {
-			cx += lipgloss.Width(m.theme.TabOn.Render(tabNames[i]))
-		} else {
-			cx += lipgloss.Width(m.theme.TabOff.Render(tabNames[i]))
-		}
+	ws := m.tabWidths()
+	for i := 0; i < 4; i++ { // sum of segment widths Health..Groups
+		cx += ws[i]
 	}
 	tm, _ := m.Update(tea.MouseClickMsg{X: cx + 1, Y: m.tabBarRow(), Button: tea.MouseLeft})
 	m = tm.(Model)
 	if m.tab != tabDrift {
 		t.Fatalf("clicking tab index 4 -> %v, want tabDrift", m.tab)
+	}
+}
+
+// The nav-bar tabs must span the FULL terminal width (proportional fill): the
+// rendered bar and the click hit-ranges (tabWidths) both cover exactly m.width.
+func TestTabBarSpansFullWidth(t *testing.T) {
+	m := sizedModel(t)
+	if got := lipgloss.Width(m.tabBar()); got != m.width {
+		t.Fatalf("tab bar width = %d, want %d (must span the full terminal width)", got, m.width)
+	}
+	sum := 0
+	for _, w := range m.tabWidths() {
+		sum += w
+	}
+	if sum != m.width {
+		t.Fatalf("tabWidths sum = %d, want %d", sum, m.width)
 	}
 }
 

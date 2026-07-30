@@ -33,6 +33,11 @@ func (m Model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.info, cmd = m.info.update(msg) // bubbles/viewport scrolls on the wheel
 		return m, cmd
 	}
+	if m.logOpen {
+		var cmd tea.Cmd
+		m.log, cmd = m.log.update(msg) // bubbles/viewport scrolls on the wheel
+		return m, cmd
+	}
 	if m.pickerOpen {
 		if w, ok := msg.(tea.MouseWheelMsg); ok {
 			switch w.Button {
@@ -117,6 +122,8 @@ func (m *Model) activeScrollTable() *scrollTable {
 		return &m.groups.st
 	case tabDrift:
 		return &m.drift.st
+	case tabRuns:
+		return &m.runs.st
 	case tabPersistent:
 		return &m.runners.st
 	}
@@ -153,19 +160,15 @@ func (m Model) tabBarRow() int {
 	return lipgloss.Height(m.headerView()) + 1
 }
 
-// tabAtX returns the tab whose label spans column x on the tab-bar row. The tab
-// bar is JoinHorizontal of the styled labels starting at column 0, so cumulative
-// rendered widths give each label's hit range.
+// tabAtX returns the tab whose segment spans column x on the tab-bar row. The tab
+// bar is JoinHorizontal of the full-width segments starting at column 0, so the
+// cumulative segment widths (tabWidths, shared with tabBar) give each hit range.
 func (m Model) tabAtX(x, y int) (tab, bool) {
 	if y != m.tabBarRow() {
 		return 0, false
 	}
 	cx := 0
-	for i, name := range tabNames {
-		w := lipgloss.Width(m.theme.TabOff.Render(name))
-		if tab(i) == m.tab {
-			w = lipgloss.Width(m.theme.TabOn.Render(name))
-		}
+	for i, w := range m.tabWidths() {
 		if x >= cx && x < cx+w {
 			return tab(i), true
 		}

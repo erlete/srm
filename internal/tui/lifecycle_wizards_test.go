@@ -4,15 +4,17 @@ import (
 	"testing"
 
 	"github.com/erlete/srm/internal/service"
+	"github.com/erlete/srm/internal/setup"
 )
 
 // The onboard wizard collects into the shared setup.OrgFields and converts to an
-// OrgConfig on completion.
+// OrgConfig on completion. Path mode keeps the .pem reference in PrivateKeyPath.
 func TestOnboardFormMapsFields(t *testing.T) {
-	of := newOnboardForm("/etc/srm")
+	of := newOnboardForm("/etc/srm", true)
 	of.fields.Name = "acme"
 	of.fields.AppIDStr = "123"
 	of.fields.InstIDStr = "456"
+	of.fields.KeyMode = setup.KeyModePath
 	of.fields.KeyPath = "/etc/srm/acme.pem"
 	oc := of.fields.ToOrgConfig()
 	if oc.Name != "acme" || oc.AppID != 123 || oc.InstallationID != 456 || oc.PrivateKeyPath != "/etc/srm/acme.pem" {

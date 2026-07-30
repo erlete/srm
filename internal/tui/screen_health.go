@@ -25,10 +25,22 @@ type healthReport struct {
 	RetentionErr  error
 
 	// Agent freshness (AgentVersionStatus): the published version, how many recorded
-	// local runners are behind it, and whether the check resolved.
+	// local runners are behind it, how many are recorded at all, and whether the check
+	// resolved. AgentTotal==0 means nothing is recorded here (no local runners, or a
+	// non-root read of the root-only state.json) - so "current" would be false
+	// freshness; the view distinguishes it from a genuinely up-to-date fleet.
 	AgentCurrent string
 	AgentBehind  int
+	AgentTotal   int
 	AgentOK      bool
+
+	// App repo visibility (AppInstallationAccess): whether the check resolved, the
+	// installation's repository selection, and whether private repos are invisible
+	// (the App holds only organization permissions). Surfaced as a warning so the
+	// silent public-only failure - which breaks the "selected repos" picker - is caught.
+	AppAccessOK         bool
+	AppRepoSelection    string
+	AppPrivateInvisible bool
 }
 
 // toolProbe is one host toolchain check for the doctor host section.
@@ -264,6 +276,10 @@ func (v healthView) orgColumn(w int) string {
 			agent = t.Faint.Render("• agent - published version unresolved")
 		case rep.AgentBehind > 0:
 			agent = t.Busy.Render(fmt.Sprintf("• agent - published %s · %d behind (u to upgrade)", rep.AgentCurrent, rep.AgentBehind))
+		case rep.AgentTotal == 0:
+			// No recorded runners here (none created, or a non-root read of the
+			// root-only state.json). Reporting "current" would be false freshness.
+			agent = t.StatusInfo.Render(fmt.Sprintf("• agent - GitHub publishes %s · no local runners recorded", rep.AgentCurrent))
 		default:
 			agent = t.Online.Render(fmt.Sprintf("• agent - published %s · current", rep.AgentCurrent))
 		}
@@ -273,7 +289,13 @@ func (v healthView) orgColumn(w int) string {
 			title = "▸ " + title
 			panel = t.Panel.BorderForeground(colPrimary) // highlight the selected org
 		}
-		card := lipgloss.JoinVertical(lipgloss.Left, t.PanelTtl.Render(title), auth, ret, agent)
+		lines := []string{t.PanelTtl.Render(title), auth, ret, agent}
+		// Surface a silent misconfiguration: an App with only org permissions sees
+		// no private repos, so the "selected repositories" picker hides them.
+		if rep.AppAccessOK && rep.AppPrivateInvisible {
+			lines = append(lines, t.Offline.Render(fmt.Sprintf("• app repos - PRIVATE INVISIBLE · grant Repository Metadata:read (selection: %s)", rep.AppRepoSelection)))
+		}
+		card := lipgloss.JoinVertical(lipgloss.Left, lines...)
 		cards = append(cards, panel.Width(w-2).Render(card))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, cards...)
@@ -447,6 +469,11 @@ func (v healthView) dindLines() []string {
 	}
 	t := v.theme
 	out := []string{"", t.Crumb.Render("rootless docker")}
+	// FP1: a failed hard prerequisite silently queues every DinD job, so lead with a
+	// loud BLOCKER + the one-key remediation before the per-check list.
+	if v.host.DinD.HasBlocker() {
+		out = append(out, t.Offline.Render(fmt.Sprintf("  ! BLOCKER: %d prerequisite(s) missing - DinD jobs will queue (P to provision)", len(v.host.DinD.Blockers()))))
+	}
 	if v.host.DinD.CrossOrgRisk {
 		out = append(out, t.Busy.Render("  ! perOrgUsers off with >1 org - no cross-org boundary"))
 	}

@@ -8,10 +8,14 @@ import (
 
 // DinDCheck is one rootless-Docker host-readiness probe result: a short label, an
 // OK flag (satisfied), and a detail (the resolved path / value when OK, or a
-// remediation hint when not).
+// remediation hint when not). Hard marks a prerequisite whose absence breaks rootless
+// DinD mid-job (silently queuing the fleet) rather than a soft advisory - a failed
+// Hard check is a BLOCKER that doctor/Health surface loudly and `srm provision
+// --rootless-dind` remediates.
 type DinDCheck struct {
 	Name   string
 	OK     bool
+	Hard   bool
 	Detail string
 }
 
@@ -36,6 +40,21 @@ func (r DinDReport) AllOK() bool {
 	}
 	return true
 }
+
+// Blockers returns the failed HARD checks - the prerequisites whose absence breaks
+// rootless DinD (and thus silently queues every DinD job) until fixed.
+func (r DinDReport) Blockers() []DinDCheck {
+	var out []DinDCheck
+	for _, c := range r.Checks {
+		if c.Hard && !c.OK {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// HasBlocker reports whether any hard prerequisite is unmet.
+func (r DinDReport) HasBlocker() bool { return len(r.Blockers()) > 0 }
 
 // usernsReadiness reports whether unprivileged user namespaces (which rootless
 // dockerd clones) are enabled, from the two kernel knobs, plus a human detail.

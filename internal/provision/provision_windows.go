@@ -98,15 +98,20 @@ func (w *windows) Apply(ctx context.Context, m core.DependencyManifest) error {
 	}
 
 	for _, script := range m.SetupScripts {
-		if _, err := os.Stat(script); err != nil {
-			return fmt.Errorf("setup script %s: %w", script, err)
+		// A SetupScripts entry is either a pre-placed .ps1 path or an inline body
+		// (P4) that resolveSetupScript materializes to a 0700 temp .ps1.
+		path, cleanup, err := resolveSetupScript(script, ".ps1")
+		if err != nil {
+			return wrapScriptErr(script, err)
 		}
 		// PowerShell is the Windows escape hatch (the analog of `bash script`).
 		// -ExecutionPolicy Bypass so an unsigned operator script runs; the operator
 		// authored it, so this is not a new trust boundary.
-		if err := run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive",
-			"-ExecutionPolicy", "Bypass", "-File", script); err != nil {
-			return fmt.Errorf("setup script %s: %w", script, err)
+		runErr := run(ctx, "powershell.exe", "-NoProfile", "-NonInteractive",
+			"-ExecutionPolicy", "Bypass", "-File", path)
+		cleanup()
+		if runErr != nil {
+			return wrapScriptErr(script, runErr)
 		}
 	}
 

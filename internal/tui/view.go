@@ -67,14 +67,52 @@ func (m Model) headerView() string {
 	return left + strings.Repeat(" ", gap) + right
 }
 
+// tabWidths returns each tab's TOTAL rendered width, distributing the slack between
+// the sum of the labels' natural widths and the terminal width PROPORTIONALLY, so
+// the nav bar spans the full screen (relative, never truncating a label). Shared by
+// tabBar (render) and tabAtX (click hit-test) so both agree on the exact layout.
+func (m Model) tabWidths() []int {
+	ws := make([]int, len(tabNames))
+	base := 0
+	for i, name := range tabNames {
+		style := m.theme.TabOff
+		if tab(i) == m.tab {
+			style = m.theme.TabOn
+		}
+		ws[i] = lipgloss.Width(style.Render(name))
+		base += ws[i]
+	}
+	extra := m.width - base
+	if extra <= 0 || base <= 0 {
+		return ws
+	}
+	given := 0
+	for i := range ws {
+		share := extra * ws[i] / base
+		ws[i] += share
+		given += share
+	}
+	ws[len(ws)-1] += extra - given
+	return ws
+}
+
 func (m Model) tabBar() string {
+	ws := m.tabWidths()
 	tabs := make([]string, 0, len(tabNames))
 	for i, name := range tabNames {
+		style := m.theme.TabOff
 		if tab(i) == m.tab {
-			tabs = append(tabs, m.theme.TabOn.Render(name))
-		} else {
-			tabs = append(tabs, m.theme.TabOff.Render(name))
+			style = m.theme.TabOn
 		}
+		// ws[i] is the TOTAL segment width. lipgloss Width() sets the width INCLUDING
+		// padding (padding is applied before the align-to-width step) but BEFORE the
+		// border is added, so subtract only the horizontal border (0 for these
+		// bottom-border-only tabs). Center the label within its segment.
+		content := ws[i] - style.GetHorizontalBorderSize()
+		if content < 0 {
+			content = 0
+		}
+		tabs = append(tabs, style.Width(content).Align(lipgloss.Center).Render(name))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Bottom, tabs...)
 }
@@ -165,10 +203,22 @@ func (m Model) bodyView(h int) string {
 		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
 	}
 	if m.onboardForm != nil {
+		title := "Onboard a new org"
+		if m.onboardForm.edit {
+			title = "Edit org"
+		}
 		box := m.theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left,
-			m.theme.ModalT.Render("Onboard a new org"),
+			m.theme.ModalT.Render(title),
 			"",
 			m.onboardForm.form.View(),
+		))
+		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
+	}
+	if m.manifestForm != nil {
+		box := m.theme.Modal.Render(lipgloss.JoinVertical(lipgloss.Left,
+			m.theme.ModalT.Render("Edit host manifest"),
+			"",
+			m.manifestForm.form.View(),
 		))
 		return lipgloss.Place(m.width, h, lipgloss.Center, lipgloss.Center, box)
 	}
@@ -193,6 +243,9 @@ func (m Model) bodyView(h int) string {
 	if m.infoOpen {
 		return m.info.view()
 	}
+	if m.logOpen {
+		return m.log.view()
+	}
 	switch m.tab {
 	case tabHealth:
 		return m.health.view()
@@ -202,6 +255,8 @@ func (m Model) bodyView(h int) string {
 		return m.groups.view()
 	case tabDrift:
 		return m.driftBody()
+	case tabRuns:
+		return lipgloss.JoinVertical(lipgloss.Left, m.runs.tableView(), m.runs.bottomLine())
 	case tabSettings:
 		return m.settingsBody()
 	default: // tabPersistent
@@ -277,6 +332,8 @@ func (m Model) contextHelp() string {
 		return "↑/↓ move · i info · n new · e edit · d delete · enter repo access · / filter" + global
 	case tabDrift:
 		return "↑/↓ move · i info · enter jump · f fix · g reap · r re-audit · / filter" + global
+	case tabRuns:
+		return "↑/↓ move · i info · L log · / filter · r refresh" + global
 	case tabSettings:
 		return "↑/↓ lifecycle · enter run · e edit capacity" + global
 	}

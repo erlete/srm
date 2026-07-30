@@ -9,6 +9,7 @@ import (
 	lipgloss "charm.land/lipgloss/v2"
 
 	"github.com/erlete/srm/internal/service"
+	"github.com/erlete/srm/internal/setup"
 )
 
 // Onboard + Restore lifecycle wizards. Both mutate the config on disk and then rebuild
@@ -41,10 +42,21 @@ func loadBackupsCmd(mgr *service.Manager) tea.Cmd {
 	}
 }
 
-// onboardSaveCmd persists the newly added org, reloads the Manager, and validates the
-// org's GitHub auth by listing its runners (0 counts as success).
-func onboardSaveCmd(ctx context.Context, mgr *service.Manager, org string) tea.Cmd {
+// onboardSaveCmd stores a pasted App key (encrypted) when the form used paste mode,
+// persists the newly added org, reloads the Manager, and validates the org's GitHub
+// auth by listing its runners (0 counts as success). The key material never leaves
+// this command (no logging).
+func onboardSaveCmd(ctx context.Context, mgr *service.Manager, org string, fields setup.OrgFields, edit bool) tea.Cmd {
+	verb := "onboarded"
+	if edit {
+		verb = "updated"
+	}
 	return func() tea.Msg {
+		if fields.KeyMode == setup.KeyModePaste {
+			if err := mgr.StoreOrgKey(org, fields.KeyPaste, fields.Passphrase); err != nil {
+				return reloadMsg{err: fmt.Errorf("store App key: %w", err)}
+			}
+		}
 		if err := mgr.SaveConfig(); err != nil {
 			return reloadMsg{err: fmt.Errorf("save config: %w", err)}
 		}
@@ -54,7 +66,7 @@ func onboardSaveCmd(ctx context.Context, mgr *service.Manager, org string) tea.C
 		if _, authErr := mgr.ListRunners(ctx, org); authErr != nil {
 			return reloadMsg{note: fmt.Sprintf("org %s saved, but GitHub auth failed: %v (fix the App creds, then refresh)", org, authErr), warn: true}
 		}
-		return reloadMsg{note: fmt.Sprintf("org %s onboarded and authenticated", org)}
+		return reloadMsg{note: fmt.Sprintf("org %s %s and authenticated", org, verb)}
 	}
 }
 

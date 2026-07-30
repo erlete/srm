@@ -33,6 +33,7 @@ func newEphemeralView(t Theme) ephemeralView {
 		{Title: "ORG", Width: 16},
 		{Title: "SLOT", Width: 6},
 		{Title: "GROUP", Width: 9},
+		{Title: "LABELS", Width: 18},
 		{Title: "STATE", Width: 13},
 		{Title: "RESTARTS", Width: 9},
 		{Title: "LIVE", Width: 9},
@@ -71,7 +72,7 @@ func (v *ephemeralView) applyFilter() {
 	tr := make([]table.Row, 0, len(v.rows))
 	for _, s := range v.rows {
 		tr = append(tr, table.Row{
-			v.sel.gutter(slotKey(s)), s.Org, s.Slot, groupCell(s.GroupName, s.GroupID), slotStatePlain(s.EphemeralSlot),
+			v.sel.gutter(slotKey(s)), s.Org, s.Slot, groupCell(s.GroupName, s.GroupID), slotLabelsCell(s.Labels), slotStatePlain(s.EphemeralSlot),
 			fmt.Sprintf("%d", s.Restarts), humanBytes(s.MemCur), memPair(s.MemPeak, s.MemMax),
 			oomCell(s.OOMKills),
 		})
@@ -87,7 +88,17 @@ func (v *ephemeralView) applyFilter() {
 
 func (v ephemeralView) haystack(s service.FusedSlot) string {
 	label, _ := slotState(s.EphemeralSlot)
-	return strings.ToLower(strings.Join([]string{s.Org, s.Slot, label}, " "))
+	return strings.ToLower(strings.Join(append([]string{s.Org, s.Slot, label}, s.Labels...), " "))
+}
+
+// slotLabelsCell renders a lane's custom labels for the routing-critical LABELS
+// column ("-" when none). Labels decide which jobs a lane serves, so hiding them
+// (as the table used to) made a mis-routed fleet impossible to diagnose from here.
+func slotLabelsCell(labels []string) string {
+	if len(labels) == 0 {
+		return "-"
+	}
+	return strings.Join(labels, ",")
 }
 
 // startFilter focuses the filter input. stopFilter blurs it, optionally clearing.

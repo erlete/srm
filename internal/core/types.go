@@ -3,6 +3,8 @@
 // service, provision, runner, tui) can depend on it without import cycles.
 package core
 
+import "strings"
+
 // Runner is a self-hosted runner as the tool reasons about it, decoupled from
 // the go-github wire types.
 type Runner struct {
@@ -79,6 +81,15 @@ type DependencyManifest struct {
 func (m DependencyManifest) Empty() bool {
 	return len(m.AptPackages) == 0 && len(m.SetupScripts) == 0 &&
 		len(m.ToolCacheSeeds) == 0 && len(m.PersistentCachePaths) == 0
+}
+
+// IsInlineScript reports whether a DependencyManifest.SetupScripts entry is an
+// inline script body (authored in the TUI/CLI manifest editor) rather than a path
+// to a pre-placed file on the host: a shebang or an embedded newline is the signal.
+// Callers use it to materialize inline bodies at provision time and to avoid dumping
+// a whole script where a short label belongs.
+func IsInlineScript(entry string) bool {
+	return strings.HasPrefix(strings.TrimSpace(entry), "#!") || strings.Contains(entry, "\n")
 }
 
 // RunnerProfile is the unit the TUI lists/edits/applies. It bundles the GitHub

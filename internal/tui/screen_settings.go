@@ -20,6 +20,7 @@ type settingsSnapshot struct {
 	SliceMax  string                // effective aggregate slice ceiling
 	SliceSet  bool                  // slice ceiling explicitly overridden
 	PerOrg    bool                  // at least one org carries its own resource overrides
+	Policy    service.HostPolicy    // host-wide policy toggles (rootless DinD, isolation, hardening)
 	Path      string                // config file changes are written to
 }
 
@@ -63,9 +64,30 @@ func (v settingsView) card(w int) string {
 	// ephemeral jobs only). See capLines in screen_settings_{linux,windows}.go.
 	lines = append(lines, v.capLines(kv, orDash)...)
 
+	// Host policy toggles (editable in the same 'e' form).
+	onoff := func(b bool) string {
+		if b {
+			return t.Online.Render("on")
+		}
+		return t.Faint.Render("off")
+	}
+	p := s.Policy
+	bk := p.BuildkitImage
+	if bk == "" {
+		bk = t.Faint.Render("(default)")
+	}
+	lines = append(lines,
+		"",
+		t.PanelTtl.Render("Host policy"),
+		kv("rootless DinD", onoff(p.RootlessDinD)),
+		kv("buildkit image", bk),
+		kv("per-org users", onoff(p.PerOrgUsers)),
+		kv("protectProc", onoff(p.ProtectProc)),
+	)
+
 	lines = append(lines, "", kv("config file", t.Faint.Render(s.Path)))
 	if s.PerOrg {
-		lines = append(lines, kv("note", t.Busy.Render("some orgs have per-org overrides (edit YAML directly)")))
+		lines = append(lines, kv("note", t.Busy.Render("some orgs have per-org resource overrides (edit YAML directly)")))
 	}
 
 	inner := w - 4
@@ -98,17 +120,26 @@ type settingsForm struct {
 	cpu      string
 	tasks    string
 	sliceMax string
+	// Host-wide policy toggles (previously config-file-only).
+	rootlessDinD bool
+	buildkitImg  string
+	perOrgUsers  bool
+	protectProc  bool
 }
 
-func newSettingsForm(cur service.ResourceSettings) *settingsForm {
+func newSettingsForm(cur service.ResourceSettings, pol service.HostPolicy) *settingsForm {
 	sf := &settingsForm{
-		mode:     cur.Mode,
-		memHigh:  cur.Resources.MemoryHigh,
-		memMax:   cur.Resources.MemoryMax,
-		memSwap:  cur.Resources.MemorySwapMax,
-		cpu:      cur.Resources.CPUWeight,
-		tasks:    cur.Resources.TasksMax,
-		sliceMax: cur.SliceMax,
+		mode:         cur.Mode,
+		memHigh:      cur.Resources.MemoryHigh,
+		memMax:       cur.Resources.MemoryMax,
+		memSwap:      cur.Resources.MemorySwapMax,
+		cpu:          cur.Resources.CPUWeight,
+		tasks:        cur.Resources.TasksMax,
+		sliceMax:     cur.SliceMax,
+		rootlessDinD: pol.RootlessDinD,
+		buildkitImg:  pol.BuildkitImage,
+		perOrgUsers:  pol.PerOrgUsers,
+		protectProc:  pol.ProtectProc,
 	}
 	auto := config.AutoResourceLimits()
 	sf.form = huh.NewForm(
@@ -124,6 +155,13 @@ func newSettingsForm(cur service.ResourceSettings) *settingsForm {
 			huh.NewInput().Title("Aggregate srm.slice MemoryMax (all runners; Auto mode)").Placeholder(config.AutoSliceMemoryMax).Value(&sf.sliceMax).Validate(systemdMemValue),
 			huh.NewInput().Title("CPUWeight - optional (1..10000)").Value(&sf.cpu).Validate(optInt),
 			huh.NewInput().Title("TasksMax - optional").Value(&sf.tasks).Validate(optInt),
+		),
+		huh.NewGroup(
+			huh.NewNote().Title("Host policy").Description("Applies to SUBSEQUENT builds: new/recreated ephemeral lanes and (after `runners refresh`) persistent units. Enabling rootless DinD also needs its host prereqs - run the Provision op / `srm provision --rootless-dind`."),
+			huh.NewConfirm().Title("Rootless Docker-in-Docker (per-job dockerd on ephemeral lanes)").Value(&sf.rootlessDinD),
+			huh.NewInput().Title("BuildKit image override (blank = default)").Placeholder(config.DefaultRootlessBuildkitImage).Value(&sf.buildkitImg),
+			huh.NewConfirm().Title("Per-org isolation (each org gets its own service user + caches)").Value(&sf.perOrgUsers),
+			huh.NewConfirm().Title("Hardening: ProtectProc=invisible on persistent runner units").Value(&sf.protectProc),
 		),
 	).WithWidth(66)
 	return sf
@@ -141,6 +179,16 @@ func (sf *settingsForm) settings() service.ResourceSettings {
 			TasksMax:      strings.TrimSpace(sf.tasks),
 		},
 		SliceMax: strings.TrimSpace(sf.sliceMax),
+	}
+}
+
+// policy turns the collected toggles into a HostPolicy.
+func (sf *settingsForm) policy() service.HostPolicy {
+	return service.HostPolicy{
+		RootlessDinD:  sf.rootlessDinD,
+		BuildkitImage: strings.TrimSpace(sf.buildkitImg),
+		PerOrgUsers:   sf.perOrgUsers,
+		ProtectProc:   sf.protectProc,
 	}
 }
 

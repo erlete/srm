@@ -110,6 +110,12 @@ func (w *windows) ephemeralSlotDir(org, slot string) string {
 	return filepath.Join(w.installRoot, org, ".ephemeral", slot)
 }
 
+// EphemeralDiagDir returns the slot lane's agent _diag directory (the Windows analog
+// of the Linux path), where the runner writes per-job logs. See the interface doc.
+func (w *windows) EphemeralDiagDir(org, slot string) string {
+	return filepath.Join(w.ephemeralSlotDir(org, slot), "_diag")
+}
+
 func (w *windows) ephemeralControlDir(org, slot string) string {
 	return winEphemeralControlDir(org, slot)
 }

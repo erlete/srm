@@ -148,6 +148,35 @@ func (m *Manager) UpsertOrg(oc config.OrgConfig) {
 	m.cfg = &next
 }
 
+// HasSecretsPassphrase reports whether a secrets passphrase is already available
+// (SRM_SECRETS_PASSPHRASE or the persisted passphrase file). The onboard form uses
+// this to decide whether it must collect a new passphrase to encrypt a pasted key.
+func (m *Manager) HasSecretsPassphrase() bool {
+	_, ok := secrets.ResolvePassphrase(config.PassphraseFilePath(m.cfgPath))
+	return ok
+}
+
+// StoreOrgKey encrypts org's App private key (PEM) into srm's age secrets file and
+// switches the Manager to that store, so the key is usable immediately without a
+// restart. The encryption passphrase is resolved from SRM_SECRETS_PASSPHRASE, then the
+// persisted passphrase file, then newPassphrase - which, when used, is persisted
+// root-only (0600) so the detached ephemeral units (`srm _runner-cycle`, run as root)
+// and later invocations can decrypt without an env var. The PEM is never logged.
+func (m *Manager) StoreOrgKey(org, pemContents, newPassphrase string) error {
+	if m.cfgPath == "" {
+		return fmt.Errorf("no config path is set - cannot store the App key")
+	}
+	st, err := secrets.EncryptAppKey(config.SecretsFilePath(m.cfgPath), config.PassphraseFilePath(m.cfgPath), org, pemContents, newPassphrase)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.sec = st
+	m.clients = make(map[string]ghub.Client)
+	m.mu.Unlock()
+	return nil
+}
+
 // OrgNames lists configured orgs (snapshotting the config for the iteration).
 func (m *Manager) OrgNames() []string { return m.currentConfig().OrgNames() }
 
@@ -185,6 +214,23 @@ func (m *Manager) client(ctx context.Context, org string) (ghub.Client, error) {
 	}
 	m.clients[org] = c
 	return c, nil
+}
+
+// AppInstallationAccess reports the org App installation's repo-visibility posture
+// (repository selection + whether private repos are visible), read via an APP-JWT
+// client. It powers the doctor/Health surfacing of the silent "private repos
+// invisible" misconfiguration (an App granted only organization permissions).
+// Best-effort and purely observational.
+func (m *Manager) AppInstallationAccess(ctx context.Context, org string) (ghub.InstallationAccess, error) {
+	oc, ok := m.currentConfig().Org(org)
+	if !ok {
+		return ghub.InstallationAccess{}, fmt.Errorf("org %q not configured", org)
+	}
+	hc, err := auth.AppHTTPClient(ctx, oc, m.sec)
+	if err != nil {
+		return ghub.InstallationAccess{}, err
+	}
+	return ghub.AppInstallationAccess(ctx, hc, org)
 }
 
 // ListRunners returns all runners for the named org.

@@ -51,6 +51,13 @@ func printDinDReadiness(rep service.DinDReport) {
 	for _, c := range rep.Checks {
 		fmt.Printf("  %-18s %s\n", c.Name, c.Detail)
 	}
+	// FP1: a missing hard prerequisite fails DinD jobs mid-run (silently queuing the
+	// fleet), so call it out as a BLOCKER with the one-command fix rather than leaving
+	// it buried in the list above.
+	if rep.HasBlocker() {
+		fmt.Printf("  BLOCKER: %d prerequisite(s) missing - rootless-DinD jobs will queue/fail until fixed.\n", len(rep.Blockers()))
+		fmt.Println("           Fix: `sudo srm provision --rootless-dind`")
+	}
 }
 
 func newDoctorCmd() *cobra.Command {
@@ -112,6 +119,16 @@ func newDoctorCmd() *cobra.Command {
 						fmt.Printf("agent:       GitHub publishes %s\n", cur)
 					}
 				}
+				// App repo visibility (best-effort). An App granted only organization
+				// permissions sees only PUBLIC repos, silently breaking the "selected
+				// repositories" group repo-picker for private repos.
+				if acc, aerr := mgr.AppInstallationAccess(ctx, org); aerr == nil {
+					if acc.SeesPrivateRepos {
+						fmt.Printf("app repos:   private repos visible (selection: %s)\n", acc.RepositorySelection)
+					} else {
+						fmt.Printf("app repos:   PRIVATE REPOS INVISIBLE - App has no repository permissions; grant Repository Metadata:read [+ set repo access to All] (selection: %s)\n", acc.RepositorySelection)
+					}
+				}
 			}
 
 			// Host toolchain probe - self-hosted runners ship bare, so jobs that
@@ -139,9 +156,15 @@ func newDoctorCmd() *cobra.Command {
 			// Rootless-DinD readiness (Linux only; no-op on Windows). When
 			// docker.rootlessDinD is on, these prerequisites fail a build mid-job (not at
 			// startup) if absent, so surface them here. Reflects THIS host's kernel + PATH.
-			printDinDReadiness(mgr.DinDReadiness(orgs))
+			dind := mgr.DinDReadiness(orgs)
+			printDinDReadiness(dind)
 
 			fmt.Println("\nFor deep host/runner drift + health (and repair), run `srm reconcile`.")
+			// A missing hard DinD prerequisite is a real misconfiguration, not an
+			// advisory: exit non-zero so scripts/CI notice (details printed above).
+			if dind.HasBlocker() {
+				return fmt.Errorf("rootless-DinD is enabled but %d host prerequisite(s) are missing - run `sudo srm provision --rootless-dind`", len(dind.Blockers()))
+			}
 			return nil
 		},
 	}

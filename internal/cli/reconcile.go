@@ -62,10 +62,13 @@ func renderReconcile(rep service.ReconcileReport) error {
 	for _, r := range rep.Runners {
 		counts[r.Class]++
 	}
+	// Every drift class the DRIFT detail can show must appear here, or the STATE
+	// totals silently under-count (dropin-newer / ephemeral-newer were missing, so a
+	// newer-template host showed them in DRIFT but not in the summary tally).
 	order := []string{
 		service.ClassHealthy, service.ClassEphemeralSlot, service.ClassStaleDropIn, service.ClassStuck,
-		service.ClassOrphanUnit, service.ClassEphemeralStuck, service.ClassLegacyFlat, service.ClassOrphanGitHub,
-		service.ClassUnknown,
+		service.ClassOrphanUnit, service.ClassEphemeralStuck, service.ClassDropInNewer, service.ClassEphemeralNewer,
+		service.ClassLegacyFlat, service.ClassOrphanGitHub, service.ClassUnknown,
 	}
 	fmt.Println("RUNNER STATE")
 	for _, c := range order {

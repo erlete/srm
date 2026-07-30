@@ -8,6 +8,7 @@ import (
 
 	"github.com/erlete/srm/internal/config"
 	"github.com/erlete/srm/internal/core"
+	"github.com/erlete/srm/internal/joblog"
 	"github.com/erlete/srm/internal/secrets"
 	"github.com/erlete/srm/internal/service"
 )
@@ -68,7 +69,7 @@ func TestRenderPaths(t *testing.T) {
 	}})
 
 	// Each tab.
-	for _, tb := range []tab{tabHealth, tabPersistent, tabEphemeral, tabGroups, tabDrift, tabSettings} {
+	for _, tb := range []tab{tabHealth, tabPersistent, tabEphemeral, tabGroups, tabDrift, tabRuns, tabSettings} {
 		m.tab = tb
 		if v := m.View(); v.Content == "" {
 			t.Fatalf("nil view on tab %d", tb)
@@ -179,13 +180,13 @@ func TestRenderPaths(t *testing.T) {
 
 	// Create wizard (persistent).
 	m.formOpen = true
-	m.form = newCreateForm(mgr.OrgNames())
+	m.form = newCreateForm(mgr.OrgNames(), m.orgDefaults)
 	if v := m.View(); v.Content == "" {
 		t.Fatal("nil view with wizard open")
 	}
 
 	// Create wizard (ephemeral) - a distinct form, distinct title.
-	m.form = newEphemeralForm(mgr.OrgNames())
+	m.form = newEphemeralForm(mgr.OrgNames(), m.orgDefaults)
 	if v := m.View(); v.Content == "" {
 		t.Fatal("nil view with ephemeral wizard open")
 	}
@@ -194,11 +195,53 @@ func TestRenderPaths(t *testing.T) {
 
 	// Settings edit form.
 	m.tab = tabSettings
-	m.setForm = newSettingsForm(mgr.ResourceSettings())
+	m.setForm = newSettingsForm(mgr.ResourceSettings(), mgr.HostPolicy())
 	if v := m.View(); v.Content == "" {
 		t.Fatal("nil view with settings form open")
 	}
 	m.setForm = nil
+
+	// Onboard + Edit-org forms (shared OrgForm; edit mode changes the title only).
+	m.tab = tabSettings
+	m.onboardForm = newOnboardForm("/etc/srm", true)
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with onboard form open")
+	}
+	m.onboardForm = newEditOrgForm(config.OrgConfig{Name: "acme", AppID: 1, InstallationID: 2}, "/etc/srm", true)
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with edit-org form open")
+	}
+	if !m.onboardForm.edit {
+		t.Fatal("edit-org form should carry edit=true (drives the modal title)")
+	}
+	m.onboardForm = nil
+
+	// Host-manifest editor form (splits pre-placed paths vs preserved inline bodies).
+	m.tab = tabSettings
+	m.manifestForm = newManifestForm(core.DependencyManifest{
+		AptPackages:  []string{"jq"},
+		SetupScripts: []string{"/opt/setup.sh", "#!/usr/bin/env bash\necho hi\n"},
+	})
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with manifest form open")
+	}
+	m.manifestForm = nil
+
+	// Runs tab (durable job-log history) + run Info panel.
+	step(runsMsg{history: []joblog.Meta{
+		{Org: "acme", Slot: "1", RunnerName: "srm-eph-acme-1-ab", RunnerID: 101, StartedUnix: 1, EndedUnix: 31, OK: true, HasLog: true},
+		{Org: "acme", Slot: "2", RunnerName: "srm-eph-acme-2-cd", RunnerID: 102, StartedUnix: 2, EndedUnix: 2, OK: false, Error: "boom"},
+	}})
+	m.tab = tabRuns
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view on Runs tab")
+	}
+	mm2, _ := m.openInfo()
+	m = mm2.(Model)
+	if v := m.View(); v.Content == "" {
+		t.Fatal("nil view with run info open")
+	}
+	m.infoOpen = false
 
 	// Retention edit form.
 	m.tab = tabHealth

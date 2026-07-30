@@ -36,6 +36,27 @@ func HTTPClient(ctx context.Context, org *config.OrgConfig, sec secrets.Store) (
 	return oauth2.NewClient(ctx, instTS), nil
 }
 
+// AppHTTPClient builds an http client authenticated as the GitHub APP itself (a
+// short-lived App JWT), NOT scoped to an installation. It is for app-level
+// introspection the installation token cannot perform - notably reading the
+// installation's granted permissions and repository selection (GET
+// /orgs/{org}/installation), used to surface the silent "App sees only public
+// repos" misconfiguration. InstallationID is not required here.
+func AppHTTPClient(ctx context.Context, org *config.OrgConfig, sec secrets.Store) (*http.Client, error) {
+	if org.AppID == 0 {
+		return nil, fmt.Errorf("org %s: appID is required (run `srm init`)", org.Name)
+	}
+	pem, err := appPrivateKey(org, sec)
+	if err != nil {
+		return nil, err
+	}
+	appTS, err := githubauth.NewApplicationTokenSource(org.AppID, pem)
+	if err != nil {
+		return nil, fmt.Errorf("org %s: build app token source: %w", org.Name, err)
+	}
+	return oauth2.NewClient(ctx, appTS), nil
+}
+
 // appPrivateKey resolves the App private key: an explicit .pem path first, then
 // the secrets store under "app_key:<org>".
 func appPrivateKey(org *config.OrgConfig, sec secrets.Store) ([]byte, error) {

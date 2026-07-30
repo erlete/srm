@@ -276,6 +276,12 @@ type Config struct {
 	// command's built-in default. Lets a cron'd prune be config-driven.
 	CacheRetentionDays int `koanf:"cacheRetentionDays" yaml:"cacheRetentionDays,omitempty"`
 
+	// JobLogRetentionDays is the age cutoff for pruning captured ephemeral job logs
+	// (/var/lib/srm/joblogs) during `srm cache prune`. 0 = fall back to the prune
+	// command's effective cache retention. Lets the durable job-log store be bounded
+	// by the same cron'd sweep that bounds the dep cache.
+	JobLogRetentionDays int `koanf:"jobLogRetentionDays" yaml:"jobLogRetentionDays,omitempty"`
+
 	// Resources is the host-wide default cgroup limit set applied to every
 	// runner's systemd unit (per-org overrides via OrgConfig.Resources). Empty =
 	// no limits (opt-in). See ResourceLimits.

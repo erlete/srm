@@ -26,8 +26,11 @@ func (m *Manager) DinDReadiness(orgs []string) DinDReport {
 		Enabled:      true,
 		CrossOrgRisk: !m.cfg.Isolation.PerOrgUsers && len(orgs) > 1,
 	}
+	// Every probe here is a HARD prerequisite: rootless dockerd / buildx needs each one,
+	// and a missing one fails a build mid-job (silently queuing the DinD fleet) rather
+	// than erroring at startup - so each failure is a BLOCKER, not an advisory.
 	add := func(name string, ok bool, detail string) {
-		rep.Checks = append(rep.Checks, DinDCheck{Name: name, OK: ok, Detail: detail})
+		rep.Checks = append(rep.Checks, DinDCheck{Name: name, OK: ok, Hard: true, Detail: detail})
 	}
 
 	// Binaries rootless dockerd / buildx need on PATH.

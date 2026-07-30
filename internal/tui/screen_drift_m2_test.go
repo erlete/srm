@@ -15,7 +15,7 @@ func TestFixPlan(t *testing.T) {
 	cases := map[string]string{
 		service.ClassStaleDropIn:    "refresh drop-in",
 		service.ClassStuck:          "restart",
-		service.ClassOrphanUnit:     "host teardown",
+		service.ClassOrphanUnit:     "remove orphan unit",
 		service.ClassEphemeralStuck: "recreate lane",
 		service.ClassDropInNewer:    "update srm binary",
 		service.ClassEphemeralNewer: "update srm binary",

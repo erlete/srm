@@ -53,6 +53,16 @@ func newCachePruneCmd() *cobra.Command {
 			}
 			fmt.Printf("%s %d file(s), %.1f MiB from %s (not accessed in >%d days)\n",
 				verb, stats.Files, float64(stats.Bytes)/(1024*1024), stats.Root, days)
+
+			// Bound the durable ephemeral job-log store in the same sweep.
+			jlDays := mgr.Config().JobLogRetentionDays
+			if jlDays <= 0 {
+				jlDays = days
+			}
+			if n, jb, jerr := mgr.PruneJobLogs(context.Background(), time.Duration(jlDays)*24*time.Hour); jerr == nil && n > 0 {
+				fmt.Printf("%s %d job-log entrie(s), %.1f MiB from %s (older than %d days)\n",
+					verb, n, float64(jb)/(1024*1024), mgr.JobLogStore().Root, jlDays)
+			}
 			return nil
 		},
 	}

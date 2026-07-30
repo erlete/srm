@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	lipgloss "charm.land/lipgloss/v2"
 
 	"github.com/erlete/srm/internal/config"
 	"github.com/erlete/srm/internal/core"
@@ -64,9 +63,9 @@ func TestTabBarClickSwitchesTab(t *testing.T) {
 		t.Fatalf("default tab = %v, want tabHealth", m.tab)
 	}
 
-	// Column range of the second tab (Persistent): tab 0 (active) is rendered with
-	// the active style, so start-of-tab-1 = width of the active first label.
-	startTab1 := lipgloss.Width(m.theme.TabOn.Render(tabNames[0]))
+	// Column range of the second tab (Persistent): the nav bar spans the full width
+	// via tabWidths, so start-of-tab-1 = the first segment's full width.
+	startTab1 := m.tabWidths()[0]
 	x := startTab1 + 1
 	y := m.tabBarRow()
 

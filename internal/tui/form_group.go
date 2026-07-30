@@ -30,7 +30,7 @@ func newGroupForm(orgs []string) *groupForm {
 	gf.form = huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[string]().Title("Org").Options(orgOptions(orgs)...).Value(&gf.org),
-			huh.NewInput().Title("Group name").Placeholder("temporal").Value(&gf.name).Validate(nonEmpty),
+			huh.NewInput().Title("Group name").Placeholder("e.g. build, ci, ctf").Value(&gf.name).Validate(nonEmpty),
 			huh.NewSelect[string]().Title("Visibility").Options(visibilityOptions()...).Value(&gf.visibility),
 			huh.NewNote().Description("With \"selected\" you pick which repositories may use this group (next step)."),
 		),

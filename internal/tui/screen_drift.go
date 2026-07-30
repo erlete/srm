@@ -130,7 +130,7 @@ func fixPlan(class string) string {
 	case service.ClassStuck:
 		return "restart"
 	case service.ClassOrphanUnit:
-		return "host teardown"
+		return "remove orphan unit"
 	case service.ClassEphemeralStuck:
 		return "recreate lane"
 	case service.ClassDropInNewer, service.ClassEphemeralNewer:

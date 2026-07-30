@@ -163,6 +163,17 @@ func (m *Manager) CreateRunners(ctx context.Context, spec DeploySpec, progress c
 	if spec.Count < 1 {
 		spec.Count = 1
 	}
+	// Fall back to the org's configured runner defaults when the caller passed
+	// none: labels (OrgConfig.DefaultLabels; see defaultLabels) and group. The
+	// persistent path previously IGNORED DefaultGroupID (ephemeral already honored
+	// it) - resolve the configured default group's NAME here (the create path takes
+	// a name; JIT/ephemeral takes an id). Skipped under dry-run to stay API-free.
+	if len(spec.Labels) == 0 {
+		spec.Labels = m.defaultLabels(org)
+	}
+	if spec.Group == "" && !m.cfg.DryRun {
+		spec.Group = m.groupNameByID(ctx, org, m.defaultGroupID(org))
+	}
 
 	if spec.Group != "" {
 		if _, err := m.GetOrCreateGroup(ctx, org, spec.Group); err != nil {
@@ -230,6 +241,28 @@ func (m *Manager) CreateRunners(ctx context.Context, spec DeploySpec, progress c
 	return names, nil
 }
 
+// groupNameByID resolves a runner-group id to its name for this org, best-effort:
+// it returns "" for the Default group (id <= DefaultGroupID, which the create path
+// represents as an empty group name) and "" on any lookup failure (the caller then
+// lands the runner in the Default group). The persistent create path takes a group
+// NAME, whereas JIT/ephemeral takes the id - this bridges an id-valued config
+// (OrgConfig.DefaultGroupID) onto the name the create path needs.
+func (m *Manager) groupNameByID(ctx context.Context, org string, id int64) string {
+	if id <= DefaultGroupID {
+		return ""
+	}
+	gs, err := m.ListGroups(ctx, org)
+	if err != nil {
+		return ""
+	}
+	for _, g := range gs {
+		if g.ID == id {
+			return g.Name
+		}
+	}
+	return ""
+}
+
 // RecreateRunner tears a persistent runner down and stands it back up on THIS host
 // with the SAME name, custom labels, and group (BACKLOG #2). It is the clean-slate
 // remedy for an unhealthy or stuck runner whose drop-in refresh is not enough. The
@@ -243,17 +276,7 @@ func (m *Manager) RecreateRunner(ctx context.Context, org, name string, labels [
 	}
 	// Resolve the group name before teardown (CreateRunner takes a group NAME). A
 	// lookup failure is non-fatal: recreate then lands the runner in the default group.
-	group := ""
-	if groupID > DefaultGroupID {
-		if gs, lerr := m.ListGroups(ctx, org); lerr == nil {
-			for _, g := range gs {
-				if g.ID == groupID {
-					group = g.Name
-					break
-				}
-			}
-		}
-	}
+	group := m.groupNameByID(ctx, org, groupID)
 	if err := m.DestroyRunner(ctx, org, name); err != nil {
 		return fmt.Errorf("destroy %s: %w", name, err)
 	}

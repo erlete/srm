@@ -10,8 +10,10 @@ type lifecycleAction int
 const (
 	lifeBackup lifecycleAction = iota
 	lifeProvision
+	lifeManifest
 	lifeUninstall
 	lifeOnboard
+	lifeEditOrg
 	lifeRestore
 )
 
@@ -39,8 +41,10 @@ func newLifecycleView(t Theme) lifecycleView {
 		cards: []lifecycleCard{
 			{lifeBackup, "Back up config", "Snapshot config.yaml + secrets.age + per-org keys to a tarball.", false, true},
 			{lifeProvision, "Provision host deps", "Install the configured host dependency manifest (apt/scripts/tool-cache).", true, true},
+			{lifeManifest, "Edit host manifest", "Edit the host dependency manifest (apt packages, setup scripts incl. inline, tool-cache seeds, cache paths). Provision applies it.", false, true},
 			{lifeUninstall, "Uninstall (guarded)", "Tear down srm-created units, users, and trees on this host. Dry-run blast radius, then a typed hostname confirm.", true, true},
 			{lifeOnboard, "Onboard a new org", "Add an org's GitHub App creds, save + reload config, and verify auth - the same form as `srm init`.", false, true},
+			{lifeEditOrg, "Edit an org", "Re-edit an org's App creds + runner defaults (prefilled; key defaults to keep). Filter to one org (o) first if several are configured.", false, true},
 			{lifeRestore, "Restore config", "Pick a config backup tarball, confirm, and restore it - then the Manager reloads in place.", false, true},
 		},
 	}

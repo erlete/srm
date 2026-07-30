@@ -39,6 +39,39 @@ func TestSubIDRangeCount(t *testing.T) {
 	}
 }
 
+// TestDinDBlockers: only failed HARD checks are blockers; a failed soft check or any
+// passing check is not, and AllOK stays independent of hardness.
+func TestDinDBlockers(t *testing.T) {
+	rep := DinDReport{Enabled: true, Checks: []DinDCheck{
+		{Name: "docker", OK: true, Hard: true},
+		{Name: "fuse-overlayfs", OK: false, Hard: true},   // blocker
+		{Name: "newuidmap setuid", OK: false, Hard: true}, // blocker
+		{Name: "some-advisory", OK: false, Hard: false},   // NOT a blocker
+	}}
+	if !rep.HasBlocker() {
+		t.Fatal("a failed hard check must make HasBlocker true")
+	}
+	if got := len(rep.Blockers()); got != 2 {
+		t.Fatalf("Blockers() = %d, want 2 (the failed hard checks only)", got)
+	}
+	if rep.AllOK() {
+		t.Fatal("AllOK must be false when any check failed")
+	}
+
+	// No hard failures -> no blocker even if a soft check failed.
+	soft := DinDReport{Enabled: true, Checks: []DinDCheck{
+		{Name: "ok", OK: true, Hard: true},
+		{Name: "advisory", OK: false, Hard: false},
+	}}
+	if soft.HasBlocker() {
+		t.Fatal("a failed SOFT check must not be a blocker")
+	}
+	// A disabled report (DinD off) has no checks and no blocker.
+	if (DinDReport{}).HasBlocker() {
+		t.Fatal("a disabled report must have no blocker")
+	}
+}
+
 // TestUsernsReadiness pins the fix: unprivileged_userns_clone=0 (present and zero)
 // means DISABLED even when max_user_namespaces is a large positive default - the
 // hardened-kernel combination the old probe false-greened.

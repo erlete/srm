@@ -36,6 +36,7 @@ func loadSettingsCmd(mgr *service.Manager) tea.Cmd {
 			SliceMax:  sliceMax,
 			SliceSet:  cfg.SliceMemoryMax != "",
 			PerOrg:    perOrg,
+			Policy:    mgr.HostPolicy(),
 			Path:      mgr.ConfigPath(),
 		}}
 	}
@@ -88,8 +89,13 @@ func loadHealthCmd(ctx context.Context, mgr *service.Manager, orgFilter string) 
 				rep.RetentionDays = ret.Days
 				rep.RetentionMax = ret.MaxAllowedDays
 			}
-			cur, _, behind, ok := mgr.AgentVersionStatus(ctx, org)
-			rep.AgentCurrent, rep.AgentBehind, rep.AgentOK = cur, len(behind), ok
+			cur, total, behind, ok := mgr.AgentVersionStatus(ctx, org)
+			rep.AgentCurrent, rep.AgentBehind, rep.AgentTotal, rep.AgentOK = cur, len(behind), total, ok
+			if acc, aerr := mgr.AppInstallationAccess(ctx, org); aerr == nil {
+				rep.AppAccessOK = true
+				rep.AppRepoSelection = acc.RepositorySelection
+				rep.AppPrivateInvisible = !acc.SeesPrivateRepos
+			}
 			reps = append(reps, rep)
 		}
 		return healthMsg{reports: reps, host: hostDoctor(ctx, mgr, orgs)}
@@ -174,13 +180,28 @@ func saveRetentionCmd(ctx context.Context, mgr *service.Manager, org string, day
 	}
 }
 
-// saveSettingsCmd persists the edited capacity policy, then reloads the snapshot.
-func saveSettingsCmd(mgr *service.Manager, s service.ResourceSettings) tea.Cmd {
+// saveSettingsCmd persists the edited capacity policy and host-wide policy toggles,
+// then reloads the snapshot.
+func saveSettingsCmd(mgr *service.Manager, s service.ResourceSettings, pol service.HostPolicy) tea.Cmd {
 	return func() tea.Msg {
 		if err := mgr.ApplyResourceSettings(s); err != nil {
 			return actionMsg{err: err}
 		}
-		return actionMsg{summary: "saved capacity settings → " + mgr.ConfigPath()}
+		if err := mgr.ApplyHostPolicy(pol); err != nil {
+			return actionMsg{err: err}
+		}
+		return actionMsg{summary: "saved settings → " + mgr.ConfigPath()}
+	}
+}
+
+// saveManifestCmd persists the edited host dependency manifest. It does NOT apply it
+// to the host - that is the Provision op (`srm provision`), which the summary points at.
+func saveManifestCmd(mgr *service.Manager, man core.DependencyManifest) tea.Cmd {
+	return func() tea.Msg {
+		if err := mgr.ApplyHostManifest(man); err != nil {
+			return actionMsg{err: err}
+		}
+		return actionMsg{summary: "saved host manifest → " + mgr.ConfigPath() + " (run Provision to apply)"}
 	}
 }
 
