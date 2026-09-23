@@ -68,10 +68,23 @@ func EncryptAppKey(secPath, passPath, org, pemContents, newPassphrase string) (*
 		if strings.TrimSpace(newPassphrase) == "" {
 			return nil, fmt.Errorf("a secrets passphrase is required to encrypt the App key")
 		}
-		if err := PersistPassphrase(passPath, newPassphrase); err != nil {
+		pass = newPassphrase
+	}
+	// Persist the passphrase whenever it is not already on disk, whatever its source.
+	// ResolvePassphrase also returns a passphrase supplied only via SRM_SECRETS_PASSPHRASE,
+	// which was never written; without this an import driven by that env var leaves a
+	// store the detached ephemeral units - which have no env var - cannot open.
+	if _, onDisk := PassphraseFromFile(passPath); !onDisk {
+		if err := PersistPassphrase(passPath, pass); err != nil {
 			return nil, fmt.Errorf("persist secrets passphrase: %w", err)
 		}
-		pass = newPassphrase
+	}
+	// Encrypt with the persisted passphrase - exactly what a detached unit reads back.
+	// If an env passphrase differs from a pre-existing file, the file wins, so the store
+	// always matches the passphrase the runners will decrypt with rather than a
+	// transient env value that only this process can see.
+	if fp, ok := PassphraseFromFile(passPath); ok {
+		pass = fp
 	}
 	st, err := NewAgeFileStore(secPath, pass)
 	if err != nil {
