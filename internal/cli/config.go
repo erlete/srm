@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"strconv"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/erlete/srm/internal/config"
 	"github.com/erlete/srm/internal/core"
+	"github.com/erlete/srm/internal/runner"
 	"github.com/erlete/srm/internal/setup"
 )
 
@@ -21,8 +25,126 @@ func newConfigCmd() *cobra.Command {
 		Use:   "config",
 		Short: "Show or set host-wide policy toggles (rootless DinD, isolation, hardening)",
 	}
-	c.AddCommand(newConfigShowCmd(), newConfigSetCmd(), newConfigEditOrgCmd(), newConfigManifestCmd(), newConfigProfilesCmd())
+	c.AddCommand(newConfigShowCmd(), newConfigSetCmd(), newConfigEditOrgCmd(), newConfigManifestCmd(), newConfigProfilesCmd(), newConfigImportKeyCmd())
 	return c
+}
+
+// newConfigImportKeyCmd encrypts an org's App private key into srm's secrets store
+// (secrets.age), clears the org's privateKeyPath, and - on Windows - grants the runner
+// service account read on the store so the ephemeral supervisor can decrypt. It is the
+// headless, non-interactive counterpart to the key paste in `srm init` / `srm config
+// edit-org`: usable over SSH or a guest agent where no TUI form can run, so a host can
+// be moved off a plaintext .pem without an interactive session.
+func newConfigImportKeyCmd() *cobra.Command {
+	var keyFile, passphrase string
+	var removeSource bool
+	c := &cobra.Command{
+		Use:   "import-key",
+		Short: "Encrypt an org's App key into the secrets store and clear privateKeyPath (headless)",
+		Long: "Encrypt a GitHub App private key (.pem) into srm's age-encrypted secrets store so no " +
+			"plaintext key file is needed at rest, then clear the org's privateKeyPath so the key is " +
+			"resolved from the store. The key is read from --key-file, or from the org's currently " +
+			"configured privateKeyPath. The passphrase comes from --passphrase or SRM_SECRETS_PASSPHRASE " +
+			"(persisted root-only so the detached ephemeral runners can decrypt without an env var). On " +
+			"Windows the runner service account is granted read on the store. This is the non-interactive " +
+			"equivalent of the key paste in `srm init` / `srm config edit-org`.",
+		RunE: func(*cobra.Command, []string) error {
+			mgr, closeLog, err := buildManager()
+			if err != nil {
+				return err
+			}
+			defer closeLog()
+			if err := requireOrgs(mgr); err != nil {
+				return err
+			}
+			org, err := targetOrg(mgr)
+			if err != nil {
+				return err
+			}
+			oc, ok := mgr.Config().Org(org)
+			if !ok {
+				return fmt.Errorf("org %q not configured", org)
+			}
+			src := keyFile
+			if src == "" {
+				src = oc.PrivateKeyPath
+			}
+			if src == "" {
+				return fmt.Errorf("no key to import: pass --key-file, or set the org's privateKeyPath first")
+			}
+			keyBytes, err := os.ReadFile(src)
+			if err != nil {
+				return fmt.Errorf("read App key %s: %w", src, err)
+			}
+			if err := validatePEMPrivateKey(keyBytes); err != nil {
+				return fmt.Errorf("%s: %w", src, err)
+			}
+			if passphrase == "" && !mgr.HasSecretsPassphrase() {
+				return fmt.Errorf("no secrets passphrase available: pass --passphrase or set SRM_SECRETS_PASSPHRASE " +
+					"(it is persisted root-only so the ephemeral runners can decrypt)")
+			}
+			if err := mgr.StoreOrgKey(org, string(keyBytes), passphrase); err != nil {
+				return fmt.Errorf("encrypt App key: %w", err)
+			}
+			// The ephemeral supervisor runs as the low-privilege runner account, which
+			// must read the store to decrypt (a no-op off Windows, where the cycle runs
+			// as root). Grant it before clearing privateKeyPath, so a failure here leaves
+			// the working key path in place rather than a store no runner can open.
+			if err := runner.EnsureSecretsReadable(context.Background(), mgr.Config().RunnerUserFor(org),
+				config.SecretsFilePath(flagConfig), config.PassphraseFilePath(flagConfig)); err != nil {
+				return fmt.Errorf("make the secrets store readable by the runner account: %w", err)
+			}
+			cfg, err := config.Load(flagConfig)
+			if err != nil {
+				return err
+			}
+			if o, ok := cfg.Org(org); ok && o.PrivateKeyPath != "" {
+				updated := *o
+				updated.PrivateKeyPath = ""
+				upsertOrg(cfg, updated)
+				if err := writeConfig(flagConfig, cfg); err != nil {
+					return err
+				}
+			}
+			fmt.Printf("Encrypted the App key for %q into %s; cleared privateKeyPath.\n", org, config.SecretsFilePath(flagConfig))
+			if err := validateOrgAuth(org); err != nil {
+				fmt.Printf("⚠ stored, but the GitHub auth check failed: %v\n", err)
+				fmt.Println("Fix the key/passphrase and re-run, or `srm doctor` to recheck.")
+				return nil
+			}
+			fmt.Printf("✓ GitHub auth verified for %q via the encrypted key.\n", org)
+			if removeSource {
+				if err := os.Remove(src); err != nil {
+					fmt.Printf("⚠ could not delete the source key %s: %v\n", src, err)
+				} else {
+					fmt.Printf("Deleted the plaintext source key %s.\n", src)
+				}
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&keyFile, "key-file", "", "path to the App private key .pem to import (default: the org's configured privateKeyPath)")
+	c.Flags().StringVar(&passphrase, "passphrase", "", "secrets passphrase to encrypt with (or set SRM_SECRETS_PASSPHRASE; persisted root-only for headless decrypt)")
+	c.Flags().BoolVar(&removeSource, "remove-source", false, "delete the plaintext source .pem after a verified import")
+	return c
+}
+
+// validatePEMPrivateKey rejects bytes that are not a PEM-wrapped RSA private key
+// (PKCS#1 or PKCS#8), so a mistyped path or a truncated key is caught before it is
+// encrypted and stored - a stored garbage key would otherwise only fail later, once
+// per cycle, inside the detached runner where the error is far less visible.
+func validatePEMPrivateKey(b []byte) error {
+	blk, _ := pem.Decode(b)
+	if blk == nil {
+		return fmt.Errorf("not a PEM file (no -----BEGIN ...----- block)")
+	}
+	if _, err := x509.ParsePKCS1PrivateKey(blk.Bytes); err == nil {
+		return nil
+	}
+	if _, err := x509.ParsePKCS8PrivateKey(blk.Bytes); err == nil {
+		return nil
+	}
+	return fmt.Errorf("PEM block %q is not a valid RSA private key", blk.Type)
 }
 
 // newConfigProfilesCmd is the CLI mirror of the TUI profile editor: per-org named
