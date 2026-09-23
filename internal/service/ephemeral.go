@@ -341,12 +341,20 @@ func validSlot(s string) bool {
 // the per-org user, then return so the slot's systemd unit re-execs for the next
 // job. Invoked by `srm _runner-cycle` (a slot unit's ExecStart) as root.
 func (m *Manager) RunCycle(ctx context.Context, org, slot string) error {
+	// Every failure path below pauses via backoffSleep before returning: the caller
+	// re-enters immediately (the Windows supervisor loops RunCycle in process with no
+	// restart floor, unlike a Linux slot unit's RestartSec), so a lane that fails
+	// setup - unconfigured org, an unreadable/absent App key, an unreachable API -
+	// would otherwise hot-loop at full CPU. Pacing these early returns keeps a broken
+	// lane at one attempt per backoff interval, exactly like a lane that fails to mint.
 	org, err := m.requireOrg(org)
 	if err != nil {
+		backoffSleep(ctx)
 		return err
 	}
 	c, err := m.client(ctx, org)
 	if err != nil {
+		backoffSleep(ctx)
 		return err
 	}
 	orch := m.orchestratorFor(org)
@@ -361,6 +369,7 @@ func (m *Manager) RunCycle(ctx context.Context, org, slot string) error {
 
 	params, err := orch.EphemeralMintParams(org, slot)
 	if err != nil {
+		backoffSleep(ctx)
 		return fmt.Errorf("read slot params: %w", err)
 	}
 	// Clamp a 0 group id (e.g. stale .jit-params from before the default) so it
