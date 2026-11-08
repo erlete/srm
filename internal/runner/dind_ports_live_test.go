@@ -60,13 +60,21 @@ func TestLiveDinDPortRanges(t *testing.T) {
 		}
 		_ = os.Chmod(d, 0o711)
 	}
+	// The shared cache root is traversable, like a provisioned /opt/srm-cache.
+	if err := os.MkdirAll(u.opts.CacheRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	want := map[string][2]int{"1": {10000, 10499}, "2": {10500, 10999}}
 	for slot := range want {
-		if err := mkdirOwned(ctx, u.ephemeralSlotDir(org, slot), 0o700, name); err != nil {
-			t.Fatal(err)
+		// RunJob creates the slot tree and its per-job _home (user-owned) before it
+		// starts the daemon; without _home the per-slot DOCKER_CONFIG is unreachable.
+		for _, d := range []string{u.ephemeralSlotDir(org, slot), filepath.Join(u.ephemeralSlotDir(org, slot), "_home")} {
+			if err := mkdirOwned(ctx, d, 0o700, name); err != nil {
+				t.Fatal(err)
+			}
 		}
 		daemon, env, err := u.startRootlessDocker(ctx, org, slot, usr)
 		if err != nil {
