@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-11-08
+
 ### Added
 - **Per-slot published-port ranges for rootless DinD** (`orgs[].dind.portRange`,
   `orgs[].dind.portsPerSlot`). Every slot's rootless daemon used to start on the same
@@ -574,7 +576,8 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a
   persistent-runner concept.
 
-[Unreleased]: https://github.com/erlete/srm/compare/v2.5.1...HEAD
+[Unreleased]: https://github.com/erlete/srm/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/erlete/srm/compare/v2.5.1...v2.6.0
 [2.5.1]: https://github.com/erlete/srm/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/erlete/srm/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/erlete/srm/compare/v2.3.0...v2.4.0
