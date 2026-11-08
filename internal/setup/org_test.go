@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/erlete/srm/internal/config"
+	"github.com/erlete/srm/internal/core"
 )
 
 // ToOrgConfig must trim whitespace, parse the numeric fields the form already
@@ -137,6 +138,64 @@ func TestSplitCSV(t *testing.T) {
 	for in, want := range cases {
 		if got := SplitCSV(in); !reflect.DeepEqual(got, want) {
 			t.Errorf("SplitCSV(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// Editing an org through the form must keep every field the form does not show
+// (profiles, per-org resources, runnerUser), not reset them, and must round-trip
+// the dind port partition.
+func TestEditPreservesUnmanagedFields(t *testing.T) {
+	oc := config.OrgConfig{
+		Name: "acme", AppID: 123, InstallationID: 456, DefaultGroupID: 7,
+		DefaultLabels: []string{"self-hosted"}, InstallRoot: "/opt/actions-runners",
+		RunnerUser: "svc-acme",
+		Profiles:   []core.RunnerProfile{{Name: "dind", Labels: []string{"docker"}, GroupID: 7, Ephemeral: true}},
+		Resources:  config.ResourceLimits{MemoryMax: "8G"},
+		DinD:       config.OrgDinD{PortRange: "10000-29999", PortsPerSlot: 500},
+	}
+	f := FieldsFromOrgConfig(oc)
+	if f.DinDPortRange != "10000-29999" || f.DinDPortsPerSlot != "500" {
+		t.Fatalf("dind fields not seeded: %q %q", f.DinDPortRange, f.DinDPortsPerSlot)
+	}
+	if got := f.ToOrgConfig(); !reflect.DeepEqual(got, oc) {
+		t.Fatalf("untouched edit changed the org:\n got %+v\nwant %+v", got, oc)
+	}
+
+	// Change only the labels and clear the partition: the rest survives.
+	f.LabelsStr, f.DinDPortRange, f.DinDPortsPerSlot = "self-hosted,linux", "", ""
+	got := f.ToOrgConfig()
+	if got.RunnerUser != "svc-acme" || len(got.Profiles) != 1 || got.Resources.MemoryMax != "8G" {
+		t.Fatalf("edit dropped unmanaged fields: %+v", got)
+	}
+	if !got.DinD.IsZero() {
+		t.Fatalf("clearing the pool must clear the dind block: %+v", got.DinD)
+	}
+	if !reflect.DeepEqual(got.DefaultLabels, []string{"self-hosted", "linux"}) {
+		t.Fatalf("labels edit not applied: %v", got.DefaultLabels)
+	}
+}
+
+func TestDinDFieldValidation(t *testing.T) {
+	for _, ok := range []string{"", "  ", "10000-29999"} {
+		if err := validDinDPool(ok); err != nil {
+			t.Errorf("pool %q rejected: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"10000", "500-600", "x-y"} {
+		if validDinDPool(bad) == nil {
+			t.Errorf("pool %q accepted", bad)
+		}
+	}
+	if err := validDinDPerSlot("10000-29999", ""); err != nil {
+		t.Errorf("blank block size rejected: %v", err)
+	}
+	if err := validDinDPerSlot("10000-29999", "500"); err != nil {
+		t.Errorf("valid block size rejected: %v", err)
+	}
+	for _, bad := range []string{"0", "-1", "abc", "20001"} {
+		if validDinDPerSlot("10000-29999", bad) == nil {
+			t.Errorf("block size %q accepted for a 20000-port pool", bad)
 		}
 	}
 }

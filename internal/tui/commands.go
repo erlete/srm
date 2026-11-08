@@ -135,6 +135,7 @@ func hostDoctor(ctx context.Context, mgr *service.Manager, orgs []string) health
 	}
 	// Rootless-DinD host readiness (M3): Enabled=false unless docker.rootlessDinD is on.
 	host.DinD = mgr.DinDReadiness(orgs)
+	host.DinDPorts = mgr.DinDPortRanges(ctx, orgs)
 	return host
 }
 

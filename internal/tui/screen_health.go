@@ -68,6 +68,9 @@ type healthHost struct {
 	// Rootless-DinD host readiness (M3); DinD.Enabled is false unless
 	// docker.rootlessDinD is on (or the host has no rootless-Docker analog).
 	DinD service.DinDReport
+	// DinDPorts is the per-slot published-port partitioning (orgs[].dind.portRange):
+	// configured block vs the range each running slot daemon uses. Same gating as DinD.
+	DinDPorts service.DinDPortReport
 }
 
 // healthView renders one bordered card per org, with an incremental text filter
@@ -483,6 +486,52 @@ func (v healthView) dindLines() []string {
 		} else {
 			out = append(out, "  "+t.Offline.Render("✗ "+c.Name)+"  "+t.Faint.Render(c.Detail))
 		}
+	}
+	return append(out, v.dindPortLines()...)
+}
+
+// dindPortLines summarizes the per-slot published-port partitioning: each org's pool,
+// a count of slots per state, and any warning. `srm doctor` has the per-slot table.
+func (v healthView) dindPortLines() []string {
+	rep := v.host.DinDPorts
+	if !rep.Enabled {
+		return nil
+	}
+	t := v.theme
+	if !rep.AnyPartitioned() {
+		return []string{"  " + t.Faint.Render("published ports: default range for every slot (set orgs[].dind.portRange to partition)")}
+	}
+	out := []string{"  published ports:"}
+	for _, o := range rep.Orgs {
+		switch {
+		case !o.Partitioned:
+			out = append(out, "    "+o.Org+"  "+t.Faint.Render("not partitioned"))
+		case o.Err != "":
+			out = append(out, "    "+o.Org+"  "+t.Offline.Render("invalid: "+o.Err))
+		default:
+			out = append(out, fmt.Sprintf("    %s  pool %s, %d/slot (room for %d)", o.Org, o.Pool, o.PerSlot, o.Capacity))
+		}
+	}
+	counts := map[string]int{}
+	for _, s := range rep.Slots {
+		counts[s.State]++
+	}
+	var parts []string
+	for _, st := range []string{service.PortStatePinned, service.PortStatePending, service.PortStateNotApplied, service.PortStateDefault, service.PortStateNotRunning, service.PortStateUnreadable} {
+		if n := counts[st]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, st))
+		}
+	}
+	if len(parts) > 0 {
+		line := "    slots: " + strings.Join(parts, ", ")
+		if counts[service.PortStateNotApplied]+counts[service.PortStateUnreadable] > 0 {
+			out = append(out, t.Busy.Render(line))
+		} else {
+			out = append(out, line)
+		}
+	}
+	for _, w := range rep.Warnings {
+		out = append(out, t.Busy.Render("  ! "+w))
 	}
 	return out
 }

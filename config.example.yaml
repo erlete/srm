@@ -134,6 +134,10 @@ orgs:
     defaultLabels: [self-hosted, linux, x64]
     installRoot: /opt/actions-runners
     runnerUser: srm-globex   # optional: per-org service user (default srm-<org>; needs isolation.perOrgUsers)
+    dind:                 # rootless-DinD only: give each ephemeral slot its own block of
+      portRange: 10000-29999   # dynamically published host ports (slot N = block N), so
+      portsPerSlot: 500        # parallel testcontainers jobs never publish the same port.
+                               # Keep pools of different orgs disjoint; omit = default range.
     resources:            # field-level override of the host/auto defaults above
       memoryMax: 40%      # this org's jobs may use more of the box (other fields inherit;
                           # mix % and absolute freely - e.g. "6G" for a fixed cap)

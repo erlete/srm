@@ -44,6 +44,8 @@ Invalid `resourceMode` and isolation user collisions are rejected at load.
 | `runnerUser` | string | Per-org override of the service user (isolation mode). |
 | `resources` | map | Per-org override of the cgroup caps (field-level merge over the host default). |
 | `profiles` | list | Optional named runner profiles. |
+| `dind.portRange` | string | Rootless-DinD only: this org's pool of dynamically published host ports, `START-END` (e.g. `10000-29999`). Each ephemeral slot gets its own block of it. Empty = off. See [Published ports](#published-ports-orgsdind). |
+| `dind.portsPerSlot` | int | Block size per slot inside `dind.portRange` (default `1000`). |
 
 See [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) for creating the App, the exact
 permissions (**Organization → Self-hosted runners: Read & write**, plus optional
@@ -117,6 +119,46 @@ or a `setupScript`): `docker-ce` + `docker-ce-rootless-extras`, `uidmap`,
 `user.max_user_namespaces>0`. `srm doctor` probes these and the per-user subid range
 (allocated automatically by `EnsureBase`). DinD slots run a less-hardened unit than
 the strict ephemeral default - see `docs/EPHEMERAL.md`.
+
+### Published ports (`orgs[].dind`)
+
+Every slot's rootless daemon starts with the same kernel default range for dynamic
+host ports (`32768-60999`), so parallel jobs that publish ports without naming one
+(`docker run -p 0:80`, `-P`, testcontainers) ask for the same host port and the
+second one fails with `error while calling RootlessKit PortManager.AddPort(): ...
+bind: address already in use`. Give each org a pool and srm splits it into one block
+per slot:
+
+```yaml
+orgs:
+  - name: acme
+    dind:
+      portRange: 10000-29999   # this org's pool; must not overlap another org's
+      portsPerSlot: 500        # optional, default 1000
+```
+
+Slot `N` gets `[start + (N-1)*portsPerSlot, start + N*portsPerSlot - 1]`, so here
+slot 1 publishes from `10000-10499`, slot 2 from `10500-10999`, and the pool has room
+for 40 slots. srm pins the block inside the slot's own network namespace right before
+the daemon starts; the host's `net.ipv4.ip_local_port_range` is never changed.
+
+- **Applies per cycle.** Each cycle re-reads `config.yaml`, so a slot picks up a new
+  or removed pool when its current job ends. No unit change, recreate, or restart.
+- **Fail-open.** A malformed pool, or a slot past the end of its pool, leaves that
+  slot on the default range (the previous behavior) and logs the reason to the slot's
+  journal. `srm doctor` lists it.
+- **Pick pools outside the host's ephemeral range** (`sysctl
+  net.ipv4.ip_local_port_range`, usually `32768-60999`). Inside it, the host's own
+  outbound connections, and the daemons of orgs with no pool, draw from the same
+  ports. Keep clear of ports that services on the host listen on.
+- **Explicit host ports** (`-p 8080:80`) are not partitioned: two jobs that publish
+  the same fixed port still collide, and a fixed port inside another slot's block can
+  take that port from it.
+
+`srm doctor` prints each pool and, for every local slot, the block it is assigned next
+to the range its running daemon actually uses, read from the slot's network namespace
+(`pinned`, `pending` until its next cycle, `not applied`, `default`, or `not running`),
+plus warnings for overlapping pools. Run it as root. The Health tab shows a summary.
 
 ## Host (`host`)
 

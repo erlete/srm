@@ -60,6 +60,62 @@ func printDinDReadiness(rep service.DinDReport) {
 	}
 }
 
+// printDinDPortRanges renders the rootless-DinD published-port partitioning (Linux
+// only; gathered by the service). Nothing prints when rootless DinD is off. When no
+// org partitions, a one-line hint replaces the per-slot table; otherwise every local
+// DinD slot lists the block its org assigns it next to the range its running daemon
+// actually uses (read from the slot's network namespace), then any warnings.
+func printDinDPortRanges(rep service.DinDPortReport) {
+	if !rep.Enabled {
+		return
+	}
+	fmt.Println()
+	fmt.Println("rootless docker published ports (orgs[].dind.portRange):")
+	if !rep.AnyPartitioned() {
+		fmt.Println("  not partitioned: every slot uses the default range 32768-60999 (set orgs[].dind.portRange to give each slot its own block)")
+		return
+	}
+	for _, o := range rep.Orgs {
+		switch {
+		case !o.Partitioned:
+			fmt.Printf("  %-18s not partitioned (default range 32768-60999)\n", o.Org)
+		case o.Err != "":
+			fmt.Printf("  %-18s INVALID: %s\n", o.Org, o.Err)
+		default:
+			fmt.Printf("  %-18s pool %s, %d ports per slot (room for %d slots)\n", o.Org, o.Pool, o.PerSlot, o.Capacity)
+		}
+	}
+	if len(rep.Slots) > 0 {
+		fmt.Printf("  %-24s %-13s %-13s %s\n", "slot", "configured", "effective", "state")
+		for _, s := range rep.Slots {
+			want := "default"
+			if s.Partitioned {
+				want = "-"
+				if s.WantErr == "" {
+					want = fmt.Sprintf("%d-%d", s.WantLo, s.WantHi)
+				}
+			}
+			eff := "-"
+			if s.EffErr == "" {
+				eff = fmt.Sprintf("%d-%d", s.EffLo, s.EffHi)
+			}
+			state := s.State
+			switch s.State {
+			case service.PortStatePending:
+				state += " (applies on the slot's next cycle)"
+			case service.PortStateNotApplied:
+				state += ": " + s.WantErr
+			case service.PortStateUnreadable:
+				state += ": " + s.EffErr
+			}
+			fmt.Printf("  %-24s %-13s %-13s %s\n", s.Org+"/"+s.Slot, want, eff, state)
+		}
+	}
+	for _, w := range rep.Warnings {
+		fmt.Printf("  WARNING: %s\n", w)
+	}
+}
+
 func newDoctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
@@ -158,6 +214,7 @@ func newDoctorCmd() *cobra.Command {
 			// startup) if absent, so surface them here. Reflects THIS host's kernel + PATH.
 			dind := mgr.DinDReadiness(orgs)
 			printDinDReadiness(dind)
+			printDinDPortRanges(mgr.DinDPortRanges(ctx, orgs))
 
 			fmt.Println("\nFor deep host/runner drift + health (and repair), run `srm reconcile`.")
 			// A missing hard DinD prerequisite is a real misconfiguration, not an
