@@ -28,6 +28,6 @@ func (m *Manager) DinDPortRanges(ctx context.Context, orgs []string) DinDPortRep
 			}
 		}
 	}
-	read := func(org, slot string) (int, int, error) { return runner.ReadDinDPortRange(ctx, org, slot) }
-	return buildDinDPortReport(m.cfg, orgs, slots, read, readSysctl("/proc/sys/net/ipv4/ip_local_port_range"))
+	read := func(org, slot string) (runner.DinDNetns, error) { return runner.ReadDinDNetns(ctx, org, slot) }
+	return buildDinDPortReport(m.cfg, orgs, slots, read, readSysctl("/proc/sys/net/ipv4/ip_local_port_range"), runner.DinDPortWrapperProblem())
 }

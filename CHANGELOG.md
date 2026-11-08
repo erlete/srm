@@ -6,6 +6,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-11-08
+
+### Fixed
+- **2.6.0 port partitioning left slots without Docker on hosts where `/run` is
+  `noexec`** (the Ubuntu default). The per-slot dockerd wrapper was written under
+  `/run/srm/dind/`, so the rootless script could not exec it, the daemon never
+  started, and the slot cycled without Docker. The wrapper is now a single static,
+  root-owned script at `/usr/local/lib/srm/dockerd-port-wrapper` (the slot's block is
+  passed in the environment), installed atomically and never in a directory the
+  runner user can write.
+- **Partitioning can no longer cost a slot its Docker daemon.** Before passing the
+  wrapper, srm checks that its directory is not on a `noexec` mount and runs it in a
+  check mode as the org's runner user; if that fails, the slot starts on the default
+  range and the reason goes to its journal. If the daemon still dies at startup with
+  the wrapper, srm notices at once (no 90 s wait) and relaunches it without the
+  wrapper in the same cycle.
+- **Partitioned DinD slots could run out of source ports under short connections.**
+  The slot's port block (2.6.0) is also the source-port range for the two proxy hops
+  inside the slot's network namespace (RootlessKit's forwarder and `docker-proxy`),
+  and `docker-proxy`'s dial to the container held each source port in TIME_WAIT for
+  60 seconds. A 500-port block therefore capped a published port at about 8 new
+  connections per second, after which connections failed silently
+  (`connect: cannot assign requested address`, `curl: Empty reply from server`). srm
+  now also sets `net.ipv4.tcp_tw_reuse=1` in that namespace (outgoing connections
+  only, host untouched), which lifts the cap to roughly `portsPerSlot` new
+  connections per second. It applies on each slot's next cycle with no config change.
+
+### Changed
+- `srm doctor` shows each DinD slot's effective `tcp_tw_reuse`; a slot counts as
+  `pinned` only once its daemon runs with both the block and the reuse setting. It
+  also shows the wrapper path and warns when the wrapper cannot run there.
+
 ## [2.6.0] - 2026-11-08
 
 ### Added
@@ -576,7 +608,8 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a
   persistent-runner concept.
 
-[Unreleased]: https://github.com/erlete/srm/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/erlete/srm/compare/v2.6.1...HEAD
+[2.6.1]: https://github.com/erlete/srm/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/erlete/srm/compare/v2.5.1...v2.6.0
 [2.5.1]: https://github.com/erlete/srm/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/erlete/srm/compare/v2.4.0...v2.5.0

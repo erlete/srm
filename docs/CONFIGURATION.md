@@ -140,25 +140,37 @@ orgs:
 Slot `N` gets `[start + (N-1)*portsPerSlot, start + N*portsPerSlot - 1]`, so here
 slot 1 publishes from `10000-10499`, slot 2 from `10500-10999`, and the pool has room
 for 40 slots. srm pins the block inside the slot's own network namespace right before
-the daemon starts; the host's `net.ipv4.ip_local_port_range` is never changed.
+the daemon starts, through a small root-owned wrapper it installs at
+`/usr/local/lib/srm/dockerd-port-wrapper`; the host's `net.ipv4.ip_local_port_range`
+is never changed.
 
 - **Applies per cycle.** Each cycle re-reads `config.yaml`, so a slot picks up a new
   or removed pool when its current job ends. No unit change, recreate, or restart.
-- **Fail-open.** A malformed pool, or a slot past the end of its pool, leaves that
-  slot on the default range (the previous behavior) and logs the reason to the slot's
-  journal. `srm doctor` lists it.
+- **Fail-open.** A malformed pool, a slot past the end of its pool, or a wrapper the
+  runner user cannot execute (for example `/usr/local/lib` on a `noexec` mount) leaves
+  that slot on the default range (the previous behavior) and logs the reason to the
+  slot's journal. If the daemon still fails to start with the wrapper, srm relaunches
+  it without the wrapper in the same cycle. `srm doctor` lists all of these.
 - **Pick pools outside the host's ephemeral range** (`sysctl
   net.ipv4.ip_local_port_range`, usually `32768-60999`). Inside it, the host's own
   outbound connections, and the daemons of orgs with no pool, draw from the same
   ports. Keep clear of ports that services on the host listen on.
+- **Size the block for connections, too.** The block is also the source-port range
+  of the two proxy hops inside the slot's namespace (RootlessKit's forwarder and
+  `docker-proxy`), one pair per inbound connection to a published port. srm sets
+  `net.ipv4.tcp_tw_reuse=1` there, so a published port sustains roughly
+  `portsPerSlot` new connections per second (without it, closed connections would
+  hold their source port for 60 seconds). A job that opens more short-lived
+  connections than that to one published port needs a larger `portsPerSlot`.
 - **Explicit host ports** (`-p 8080:80`) are not partitioned: two jobs that publish
   the same fixed port still collide, and a fixed port inside another slot's block can
   take that port from it.
 
 `srm doctor` prints each pool and, for every local slot, the block it is assigned next
-to the range its running daemon actually uses, read from the slot's network namespace
-(`pinned`, `pending` until its next cycle, `not applied`, `default`, or `not running`),
-plus warnings for overlapping pools. Run it as root. The Health tab shows a summary.
+to the range and `tcp_tw_reuse` its running daemon actually uses, read from the slot's
+network namespace (`pinned`, `pending` until its next cycle, `not applied`, `default`,
+or `not running`), plus warnings for overlapping pools. Run it as root. The Health tab
+shows a summary.
 
 ## Host (`host`)
 

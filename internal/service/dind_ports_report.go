@@ -19,7 +19,7 @@ const (
 
 // DinD published-port slot states (DinDPortSlot.State).
 const (
-	PortStatePinned     = "pinned"      // the daemon runs on exactly the configured block
+	PortStatePinned     = "pinned"      // the daemon runs on exactly the configured block, with tcp_tw_reuse=1
 	PortStatePending    = "pending"     // configured, but the running daemon predates it (next cycle applies it)
 	PortStateDefault    = "default"     // org not partitioned: kernel default range
 	PortStateNotApplied = "not applied" // configured but this slot cannot get a block (see WantErr)
@@ -46,6 +46,7 @@ type DinDPortSlot struct {
 	WantLo, WantHi int
 	WantErr        string
 	EffLo, EffHi   int
+	EffTWReuse     int // net.ipv4.tcp_tw_reuse in the slot's namespace (valid when EffErr == "")
 	EffErr         string
 	State          string
 }
@@ -58,6 +59,10 @@ type DinDPortReport struct {
 	Orgs     []DinDPortOrg
 	Slots    []DinDPortSlot
 	Warnings []string
+	// WrapperPath is the dockerd wrapper partitioned slots exec; WrapperProblem is why
+	// it cannot run here ("" when fine or not installed yet).
+	WrapperPath    string
+	WrapperProblem string
 }
 
 // AnyPartitioned reports whether at least one org partitions published ports.
@@ -73,14 +78,15 @@ func (r DinDPortReport) AnyPartitioned() bool {
 // localSlot is an installed ephemeral slot lane (org + slot id).
 type localSlot struct{ org, slot string }
 
-// portRangeReader reads a slot's effective range (runner.ReadDinDPortRange in prod).
-type portRangeReader func(org, slot string) (lo, hi int, err error)
+// netnsReader reads a slot's effective namespace sysctls (runner.ReadDinDNetns in prod).
+type netnsReader func(org, slot string) (runner.DinDNetns, error)
 
 // buildDinDPortReport assembles the report from config, the host's installed slots,
-// an effective-range reader and the host's own ip_local_port_range ("" if unknown).
-// Pure (no host access) so it is unit-testable on any OS.
-func buildDinDPortReport(cfg *config.Config, orgs []string, slots []localSlot, read portRangeReader, hostRange string) DinDPortReport {
-	rep := DinDPortReport{Enabled: true}
+// an effective-range reader, the host's own ip_local_port_range ("" if unknown) and
+// the wrapper's executability problem ("" if none). Pure (no host access) so it is
+// unit-testable on any OS.
+func buildDinDPortReport(cfg *config.Config, orgs []string, slots []localSlot, read netnsReader, hostRange, wrapperProblem string) DinDPortReport {
+	rep := DinDPortReport{Enabled: true, WrapperPath: runner.DinDPortWrapperPath, WrapperProblem: wrapperProblem}
 	inScope := map[string]bool{}
 	for _, o := range orgs {
 		inScope[o] = true
@@ -125,14 +131,14 @@ func buildDinDPortReport(cfg *config.Config, orgs []string, slots []localSlot, r
 		} else {
 			unpartitioned[ls.org]++
 		}
-		lo, hi, err := read(ls.org, ls.slot)
+		eff, err := read(ls.org, ls.slot)
 		switch {
 		case errors.Is(err, runner.ErrDinDNotRunning):
 			s.EffErr = "not running"
 		case err != nil:
 			s.EffErr = err.Error()
 		default:
-			s.EffLo, s.EffHi = lo, hi
+			s.EffLo, s.EffHi, s.EffTWReuse = eff.PortLo, eff.PortHi, eff.TWReuse
 		}
 		s.State = slotPortState(s)
 		rep.Slots = append(rep.Slots, s)
@@ -144,6 +150,12 @@ func buildDinDPortReport(cfg *config.Config, orgs []string, slots []localSlot, r
 		return slotLess(rep.Slots[i].Slot, rep.Slots[j].Slot)
 	})
 
+	// A wrapper the per-org users cannot execute means every partitioned slot falls
+	// back to the default range (srm checks before each cycle, so Docker still runs).
+	if wrapperProblem != "" && rep.AnyPartitioned() {
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf("dockerd port wrapper %s cannot run: %s; partitioned slots fall back to the default range",
+			runner.DinDPortWrapperPath, wrapperProblem))
+	}
 	// Cross-org overlaps and malformed pools (the config-level checks).
 	for _, issue := range cfg.DinDPortIssues() {
 		for _, o := range orgs {
@@ -187,7 +199,10 @@ func buildDinDPortReport(cfg *config.Config, orgs []string, slots []localSlot, r
 	return rep
 }
 
-// slotPortState classifies a slot from its configured and effective ranges.
+// slotPortState classifies a slot from its configured and effective ranges. A
+// partitioned slot is pinned only once its daemon runs on the block AND with
+// tcp_tw_reuse=1: a daemon started by srm v2.6.0 has the block but not the reuse
+// setting, so it stays pending until its next cycle.
 func slotPortState(s DinDPortSlot) string {
 	switch {
 	case s.Partitioned && s.WantErr != "":
@@ -198,7 +213,7 @@ func slotPortState(s DinDPortSlot) string {
 		return PortStateUnreadable
 	case !s.Partitioned:
 		return PortStateDefault
-	case s.EffLo == s.WantLo && s.EffHi == s.WantHi:
+	case s.EffLo == s.WantLo && s.EffHi == s.WantHi && s.EffTWReuse == 1:
 		return PortStatePinned
 	default:
 		return PortStatePending
