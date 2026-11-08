@@ -34,7 +34,7 @@ func TestDinDPortReportStates(t *testing.T) {
 		}
 		return runner.DinDNetns{}, runner.ErrDinDNotRunning
 	}
-	rep := buildDinDPortReport(cfg, []string{"acme", "globex"}, slots, read, "")
+	rep := buildDinDPortReport(cfg, []string{"acme", "globex"}, slots, read, "", "")
 	if !rep.Enabled || !rep.AnyPartitioned() {
 		t.Fatalf("report not enabled/partitioned: %+v", rep)
 	}
@@ -72,7 +72,7 @@ func TestDinDPortReportNotRunningAndUnreadable(t *testing.T) {
 		}
 		return runner.DinDNetns{}, errors.New("needs root to enter the slot's network namespace")
 	}
-	rep := buildDinDPortReport(cfg, []string{"acme"}, []localSlot{{"acme", "1"}, {"acme", "2"}}, read, "")
+	rep := buildDinDPortReport(cfg, []string{"acme"}, []localSlot{{"acme", "1"}, {"acme", "2"}}, read, "", "")
 	if rep.Slots[0].State != PortStateNotRunning || rep.Slots[1].State != PortStateUnreadable {
 		t.Fatalf("states = %q, %q", rep.Slots[0].State, rep.Slots[1].State)
 	}
@@ -86,7 +86,7 @@ func TestDinDPortReportWarnings(t *testing.T) {
 		config.OrgConfig{Name: "acme", DinD: config.OrgDinD{PortRange: "10000-29999", PortsPerSlot: 500}},
 		config.OrgConfig{Name: "globex", DinD: config.OrgDinD{PortRange: "30000-31999", PortsPerSlot: 500}},
 	)
-	if rep := buildDinDPortReport(clean, []string{"acme", "globex"}, []localSlot{{"acme", "1"}, {"globex", "1"}}, never, "32768\t60999\n"); len(rep.Warnings) != 0 {
+	if rep := buildDinDPortReport(clean, []string{"acme", "globex"}, []localSlot{{"acme", "1"}, {"globex", "1"}}, never, "32768\t60999\n", ""); len(rep.Warnings) != 0 {
 		t.Fatalf("clean layout warned: %v", rep.Warnings)
 	}
 
@@ -95,7 +95,7 @@ func TestDinDPortReportWarnings(t *testing.T) {
 		config.OrgConfig{Name: "acme", DinD: config.OrgDinD{PortRange: "40000-49999"}},
 		config.OrgConfig{Name: "globex"},
 	)
-	rep := buildDinDPortReport(mixed, []string{"acme", "globex"}, []localSlot{{"acme", "1"}, {"globex", "1"}, {"globex", "2"}}, never, "32768\t60999\n")
+	rep := buildDinDPortReport(mixed, []string{"acme", "globex"}, []localSlot{{"acme", "1"}, {"globex", "1"}, {"globex", "2"}}, never, "32768\t60999\n", "")
 	joined := strings.Join(rep.Warnings, "\n")
 	for _, want := range []string{
 		"2 DinD slot(s) of globex have no dind.portRange",
@@ -112,12 +112,30 @@ func TestDinDPortReportWarnings(t *testing.T) {
 		config.OrgConfig{Name: "acme", DinD: config.OrgDinD{PortRange: "10000-20999"}},
 		config.OrgConfig{Name: "globex", DinD: config.OrgDinD{PortRange: "20000-29999"}},
 	)
-	rep = buildDinDPortReport(overlap, []string{"acme", "globex"}, nil, never, "")
+	rep = buildDinDPortReport(overlap, []string{"acme", "globex"}, nil, never, "", "")
 	if len(rep.Warnings) != 1 || !strings.Contains(rep.Warnings[0], "overlap") {
 		t.Fatalf("overlap warning missing: %v", rep.Warnings)
 	}
 	// Scoped to one unrelated org (doctor --org), the other orgs' issue is not shown.
-	if rep := buildDinDPortReport(portCfg(append(overlap.Orgs, config.OrgConfig{Name: "initech"})...), []string{"initech"}, nil, never, ""); len(rep.Warnings) != 0 {
+	if rep := buildDinDPortReport(portCfg(append(overlap.Orgs, config.OrgConfig{Name: "initech"})...), []string{"initech"}, nil, never, "", ""); len(rep.Warnings) != 0 {
 		t.Fatalf("issue for other orgs leaked into a scoped report: %v", rep.Warnings)
+	}
+}
+
+// A wrapper the per-org users cannot execute (e.g. installed on a noexec mount) is
+// surfaced, but only when some org actually partitions.
+func TestDinDPortReportWrapperProblem(t *testing.T) {
+	never := func(string, string) (runner.DinDNetns, error) { return runner.DinDNetns{}, runner.ErrDinDNotRunning }
+	part := portCfg(config.OrgConfig{Name: "acme", DinD: config.OrgDinD{PortRange: "10000-19999"}})
+	rep := buildDinDPortReport(part, []string{"acme"}, nil, never, "", "/usr/local/lib/srm is on a noexec mount")
+	if rep.WrapperPath != runner.DinDPortWrapperPath || rep.WrapperProblem == "" {
+		t.Fatalf("wrapper fields not set: %+v", rep)
+	}
+	if len(rep.Warnings) != 1 || !strings.Contains(rep.Warnings[0], "noexec") || !strings.Contains(rep.Warnings[0], "fall back to the default range") {
+		t.Fatalf("wrapper problem not warned: %v", rep.Warnings)
+	}
+	off := portCfg(config.OrgConfig{Name: "acme"})
+	if rep := buildDinDPortReport(off, []string{"acme"}, nil, never, "", "/x is on a noexec mount"); len(rep.Warnings) != 0 {
+		t.Fatalf("no org partitions, yet warned: %v", rep.Warnings)
 	}
 }

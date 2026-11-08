@@ -266,6 +266,8 @@ type Options struct {
 type ubuntu struct {
 	installRoot string
 	opts        Options
+	// dinDWrapperPath overrides DinDPortWrapperPath (tests only).
+	dinDWrapperPath string
 }
 
 // NewUbuntu returns the Ubuntu orchestrator rooted at installRoot. Unset Options
@@ -1808,7 +1810,7 @@ func (u *ubuntu) startRootlessDocker(ctx context.Context, org, slot string, usr 
 	// Authoritatively clean the per-slot runtime dir each cycle. It is tmpfs and holds
 	// the socket + exec-root, and is NOT under the data-root the pre-job reset clears.
 	// Removing it unlinks any stale socket/pidfile a prior cycle left, so THIS cycle's
-	// daemon binds a fresh socket and waitDockerSocket cannot false-ready against a
+	// daemon binds a fresh socket and waitDockerSocketOrExit cannot false-ready against a
 	// leftover listener.
 	if err := os.RemoveAll(rt); err != nil {
 		return nil, nil, err
@@ -1856,28 +1858,50 @@ func (u *ubuntu) startRootlessDocker(ctx context.Context, org, slot string, usr 
 	// stopRootlessDocker can reap the whole rootlesskit/dockerd tree. The daemon is NOT
 	// bound to ctx: a cancelled job ctx must not race the daemon down before
 	// stopRootlessDocker drains it - we own its lifecycle.
-	daemonArgv := []string{"--reuid", usr.Uid, "--regid", usr.Gid, "--init-groups", "--",
-		"env", "HOME=" + home, "XDG_RUNTIME_DIR=" + rt, "PATH=" + pinnedPATH}
-	// Per-slot published-port block (dind.portRange): DOCKERD points the rootless
-	// script at a wrapper that pins the block into the daemon's network namespace.
-	// A bad setting must not fail the job: log it and keep the default range.
-	if entry, note, err := u.dinDPortEnv(rt, org, slot); err != nil {
-		fmt.Fprintf(os.Stderr, "srm: %s/%s dind.portRange not applied, dockerd keeps the default range: %v\n", org, slot, err)
-	} else if entry != "" {
-		daemonArgv = append(daemonArgv, entry)
-		fmt.Fprintln(os.Stderr, note)
-	}
-	daemonArgv = append(daemonArgv, "dockerd-rootless.sh", "--config-file", cfgFile, "--data-root", dataRoot)
-	daemon := exec.Command("setpriv", daemonArgv...)
-	setProcessGroup(daemon)
-	daemon.Stdout, daemon.Stderr = os.Stderr, os.Stderr // daemon chatter to stderr, job stdout stays clean
-	if err := daemon.Start(); err != nil {
-		return nil, nil, fmt.Errorf("launch dockerd-rootless: %w", err)
+	launch := func(extraEnv []string) (*exec.Cmd, error) {
+		argv := []string{"--reuid", usr.Uid, "--regid", usr.Gid, "--init-groups", "--",
+			"env", "HOME=" + home, "XDG_RUNTIME_DIR=" + rt, "PATH=" + pinnedPATH}
+		argv = append(argv, extraEnv...)
+		argv = append(argv, "dockerd-rootless.sh", "--config-file", cfgFile, "--data-root", dataRoot)
+		d := exec.Command("setpriv", argv...)
+		setProcessGroup(d)
+		d.Stdout, d.Stderr = os.Stderr, os.Stderr // daemon chatter to stderr, job stdout stays clean
+		if err := d.Start(); err != nil {
+			return nil, fmt.Errorf("launch dockerd-rootless: %w", err)
+		}
+		return d, nil
 	}
 
-	if err := waitDockerSocket(ctx, sock, 90*time.Second); err != nil {
-		u.stopRootlessDocker(daemon)
+	// Per-slot published-port block (dind.portRange): DOCKERD points the rootless
+	// script at srm's wrapper, which pins the block into the daemon's network
+	// namespace. Nothing about it may cost the slot its Docker: a setting or wrapper
+	// that cannot be applied is logged and the daemon runs on the default range.
+	portEnv, note, err := u.dinDPortEnv(ctx, org, slot, usr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "srm: %s/%s dind.portRange not applied, dockerd keeps the default range: %v\n", org, slot, err)
+	} else if note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
+	daemon, err := launch(portEnv)
+	if err != nil {
 		return nil, nil, err
+	}
+	if err := waitDockerSocketOrExit(ctx, sock, 90*time.Second, daemon); err != nil {
+		u.stopRootlessDocker(daemon)
+		if len(portEnv) == 0 {
+			return nil, nil, err
+		}
+		// The wrapper passed its pre-flight yet the daemon did not come up with it:
+		// retry this same cycle without it rather than leave the slot without Docker.
+		fmt.Fprintf(os.Stderr, "srm: %s/%s rootless dockerd did not start with the published-port wrapper (%v); retrying on the default range\n", org, slot, err)
+		_ = os.RemoveAll(filepath.Join(rt, dindStateSubdir))
+		if daemon, err = launch(nil); err != nil {
+			return nil, nil, err
+		}
+		if err := waitDockerSocketOrExit(ctx, sock, 90*time.Second, daemon); err != nil {
+			u.stopRootlessDocker(daemon)
+			return nil, nil, err
+		}
 	}
 
 	// DOCKER_CONFIG is per-slot and wiped each cycle; the job is handed the same value so
@@ -2071,17 +2095,23 @@ func (u *ubuntu) stopRootlessDocker(cmd *exec.Cmd) {
 	}
 }
 
-// waitDockerSocket blocks until the rootless daemon accepts connections on its unix
-// socket, or timeout/ctx elapses. A socket still not listening at the deadline is a
-// HARD failure: the cycle must fail loudly, never run the job against a dead socket
-// (which would resurface the same EACCES-class error pointing at a missing daemon).
-func waitDockerSocket(ctx context.Context, sock string, timeout time.Duration) error {
+// waitDockerSocketOrExit blocks until the rootless daemon accepts connections on its
+// unix socket, or timeout/ctx elapses, or daemon (when non-nil) exits - a daemon that
+// died at startup (e.g. its DOCKERD could not be exec'd) never opens its socket, so
+// there is no point waiting out the timeout before the caller's fallback. A socket
+// still not listening is a HARD failure: the cycle must fail loudly, never run the job
+// against a dead socket (which would resurface the same EACCES-class error pointing at
+// a missing daemon).
+func waitDockerSocketOrExit(ctx context.Context, sock string, timeout time.Duration, daemon *exec.Cmd) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		c, err := net.DialTimeout("unix", sock, 2*time.Second)
 		if err == nil {
 			_ = c.Close()
 			return nil
+		}
+		if daemon != nil && daemon.Process != nil && processExited(daemon.Process.Pid) {
+			return fmt.Errorf("rootless dockerd exited before its socket %s was ready", sock)
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("rootless dockerd socket %s not ready after %s: %w", sock, timeout, err)

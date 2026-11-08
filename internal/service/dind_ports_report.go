@@ -59,6 +59,10 @@ type DinDPortReport struct {
 	Orgs     []DinDPortOrg
 	Slots    []DinDPortSlot
 	Warnings []string
+	// WrapperPath is the dockerd wrapper partitioned slots exec; WrapperProblem is why
+	// it cannot run here ("" when fine or not installed yet).
+	WrapperPath    string
+	WrapperProblem string
 }
 
 // AnyPartitioned reports whether at least one org partitions published ports.
@@ -78,10 +82,11 @@ type localSlot struct{ org, slot string }
 type netnsReader func(org, slot string) (runner.DinDNetns, error)
 
 // buildDinDPortReport assembles the report from config, the host's installed slots,
-// an effective-range reader and the host's own ip_local_port_range ("" if unknown).
-// Pure (no host access) so it is unit-testable on any OS.
-func buildDinDPortReport(cfg *config.Config, orgs []string, slots []localSlot, read netnsReader, hostRange string) DinDPortReport {
-	rep := DinDPortReport{Enabled: true}
+// an effective-range reader, the host's own ip_local_port_range ("" if unknown) and
+// the wrapper's executability problem ("" if none). Pure (no host access) so it is
+// unit-testable on any OS.
+func buildDinDPortReport(cfg *config.Config, orgs []string, slots []localSlot, read netnsReader, hostRange, wrapperProblem string) DinDPortReport {
+	rep := DinDPortReport{Enabled: true, WrapperPath: runner.DinDPortWrapperPath, WrapperProblem: wrapperProblem}
 	inScope := map[string]bool{}
 	for _, o := range orgs {
 		inScope[o] = true
@@ -145,6 +150,12 @@ func buildDinDPortReport(cfg *config.Config, orgs []string, slots []localSlot, r
 		return slotLess(rep.Slots[i].Slot, rep.Slots[j].Slot)
 	})
 
+	// A wrapper the per-org users cannot execute means every partitioned slot falls
+	// back to the default range (srm checks before each cycle, so Docker still runs).
+	if wrapperProblem != "" && rep.AnyPartitioned() {
+		rep.Warnings = append(rep.Warnings, fmt.Sprintf("dockerd port wrapper %s cannot run: %s; partitioned slots fall back to the default range",
+			runner.DinDPortWrapperPath, wrapperProblem))
+	}
 	// Cross-org overlaps and malformed pools (the config-level checks).
 	for _, issue := range cfg.DinDPortIssues() {
 		for _, o := range orgs {

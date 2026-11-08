@@ -86,6 +86,11 @@ func printDinDPortRanges(rep service.DinDPortReport) {
 			fmt.Printf("  %-18s pool %s, %d ports per slot (room for %d slots)\n", o.Org, o.Pool, o.PerSlot, o.Capacity)
 		}
 	}
+	if rep.WrapperProblem != "" {
+		fmt.Printf("  %-18s %s (CANNOT RUN: %s)\n", "port wrapper", rep.WrapperPath, rep.WrapperProblem)
+	} else {
+		fmt.Printf("  %-18s %s\n", "port wrapper", rep.WrapperPath)
+	}
 	if len(rep.Slots) > 0 {
 		fmt.Printf("  %-24s %-13s %-13s %-9s %s\n", "slot", "configured", "effective", "tw_reuse", "state")
 		for _, s := range rep.Slots {
