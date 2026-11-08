@@ -4,6 +4,123 @@ All notable changes to `srm` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.5.1] - 2026-09-24
+
+### Fixed
+- **Headless key import left an undecryptable store** when the secrets passphrase
+  came only from `SRM_SECRETS_PASSPHRASE`. The passphrase is now persisted
+  root-only whenever it is absent from disk (env-supplied included) and the key is
+  encrypted with that on-disk passphrase, so the detached ephemeral units, which
+  do not inherit the operator's environment, can decrypt it.
+
+## [2.5.0] - 2026-09-24
+
+### Added
+- **`srm config import-key`** - a non-interactive way to move an org's GitHub App
+  key into the encrypted store: it reads the `.pem` (`--key-file`, default the
+  org's configured `privateKeyPath`), validates it, encrypts it, and clears
+  `privateKeyPath` from the config. `--passphrase` (or `SRM_SECRETS_PASSPHRASE`)
+  supplies the secrets passphrase; `--remove-source` deletes the plaintext `.pem`
+  after a verified import. On Windows the runner service account is granted read
+  access to the encrypted store.
+
+### Fixed
+- **Ephemeral lanes could hot-loop on a setup failure.** When a cycle failed
+  before the job started (org lookup, GitHub client, or JIT mint), it returned
+  without any pacing; on Windows, whose in-process supervisor has no restart
+  floor, that spun thousands of cycles. Those early failures now back off like a
+  failed job.
+
+### Security
+- Go toolchain directive bumped to 1.26.6, clearing the stdlib advisories
+  GO-2026-6218, GO-2026-6090, GO-2026-5972 and GO-2026-5026.
+
+## [2.4.0] - 2026-07-30
+
+### Added
+- **Per-org profiles** - named create-presets that bundle labels, a runner group
+  and the nature (persistent or ephemeral). `srm runners create --profile <name>`
+  and the create wizard's Profile select seed a create from one; `srm config
+  profiles list/set/remove` and a Settings > Lifecycle "Manage profiles" editor
+  manage them. The container fields are carried as metadata only (not enforced
+  by srm).
+- **Runs "active now"** - `srm runs active` and a live block above the Runs tab
+  history relate the fleet's busy runners to the repository, workflow and job
+  they are running right now, joined live from GitHub.
+
+### Changed
+- One canonical vocabulary for runner classes and ephemeral slot states
+  (active / down / crash-loop / unit-drift), shared by the Ephemeral and Drift
+  tabs, the CLI and `srm reconcile`.
+
+### Fixed
+- **False `crash-loop` / `ephemeral-stuck` on busy ephemeral lanes.** A lane's
+  restart counter climbs once per job (`Restart=always`), so a healthy, busy lane
+  was flagged as crash-looping. An active, conformant lane is now healthy
+  regardless of restart churn, and a crash loop is diagnosed from systemd's
+  result for the last cycle.
+- Consistency fixes for reap labels, booleans, the version sentinel and footer
+  verbs across the TUI.
+
+## [2.3.0] - 2026-07-30
+
+Configuration moves into the TUI (no more hand-editing host files) and ephemeral
+job logs survive the per-cycle wipe.
+
+### Added
+- **Paste the App private key** during onboarding (`srm init`, first run and the
+  TUI Onboard wizard): the key is validated and stored encrypted, with no `.pem`
+  left on disk. An interactive secrets passphrase is asked once and persisted
+  root-only next to the config, so ephemeral units decrypt it without changes.
+- **`srm provision --rootless-dind`** installs the full rootless-Docker
+  prerequisite set (docker-ce + rootless extras, uidmap, fuse-overlayfs,
+  slirp4netns, user-namespace sysctls) idempotently; the TUI `P` provision folds
+  it in when `docker.rootlessDinD` is on.
+- **Host policy editor** - `docker.rootlessDinD`, `docker.buildkitImage`,
+  `isolation.perOrgUsers` and `hardening.protectProc` are editable from the
+  Settings form and from `srm config show` / `srm config set key=value`.
+- **Re-edit an org** - the previously frozen org fields can be changed from
+  Settings > Lifecycle "Edit an org" or `srm config edit-org` (the slug stays
+  locked; the key defaults to keep).
+- **Host dependency manifest editor** - Settings > Lifecycle "Edit host manifest"
+  and `srm config manifest show/add/remove` manage apt packages, tool-cache seeds,
+  cache paths and setup scripts. A setup script can be stored inline
+  (`--script-file`) and is materialized at provision time.
+- **Runner logs** - `srm runners logs <name>` (or `--ephemeral --slot N`) with
+  `--follow`, `--lines` and `--source journal|agent`, and an `L` log panel in the
+  TUI (Persistent, Ephemeral and Drift tabs; `f` toggles follow).
+- **Durable ephemeral job logs** - each finished job's log is captured root-owned
+  under `/var/lib/srm/joblogs` before the next cycle wipes the lane. `srm runs
+  list` / `srm runs logs <runner-id>` read them, a new **Runs** tab browses them
+  (`/` filter, `i` detail, `L` view), and `srm cache prune` applies
+  `jobLogRetentionDays`.
+- **App permission surfacing** - `srm doctor` reports which repositories the App
+  installation can see, and the Health card warns when private repositories are
+  invisible to it.
+- An Ephemeral tab `LABELS` column (also matched by the filter).
+
+### Changed
+- `srm runners create --ephemeral --count N` is **additive**: new slots take the
+  next free ids (reusing gaps) instead of re-creating slots 1 to N.
+- An org's default labels and default runner group are now applied at create
+  time and shown as form placeholders.
+- `srm doctor` exits non-zero with a BLOCKER line and the fix when a hard
+  rootless-DinD prerequisite is missing; the Health tab shows the same blocker.
+- Tabs and table columns span the full terminal width, with slack distributed
+  proportionally across columns.
+
+### Fixed
+- The ephemeral per-job reset unmounts stale rootless-DinD mounts left by a
+  killed cycle before wiping the work tree, so the wipe no longer fails busy.
+- The agent version check no longer reports "current" for an org with zero
+  runners.
+
+### Security
+- Go toolchain directive bumped to 1.26.5, fixing the stdlib TLS advisory
+  GO-2026-5856.
+
 ## [2.2.0] - 2026-07-12
 
 Follow-up TUI release that builds out the deferred items from the v2.1.0 release
@@ -429,7 +546,16 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a
   persistent-runner concept.
 
-[Unreleased]: https://github.com/erlete/srm/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/erlete/srm/compare/v2.5.1...HEAD
+[2.5.1]: https://github.com/erlete/srm/compare/v2.5.0...v2.5.1
+[2.5.0]: https://github.com/erlete/srm/compare/v2.4.0...v2.5.0
+[2.4.0]: https://github.com/erlete/srm/compare/v2.3.0...v2.4.0
+[2.3.0]: https://github.com/erlete/srm/compare/v2.2.0...v2.3.0
+[2.2.0]: https://github.com/erlete/srm/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/erlete/srm/compare/v2.0.1...v2.1.0
+[2.0.1]: https://github.com/erlete/srm/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/erlete/srm/compare/v1.4.0...v2.0.0
+[1.4.0]: https://github.com/erlete/srm/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/erlete/srm/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/erlete/srm/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/erlete/srm/compare/v1.1.0...v1.2.0
