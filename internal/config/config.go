@@ -50,6 +50,10 @@ type OrgConfig struct {
 	// Resources overrides the host-level cgroup limits for this org's runners,
 	// field by field (an unset field inherits the host default). See ResourceLimits.
 	Resources ResourceLimits `koanf:"resources" yaml:"resources,omitempty"`
+
+	// DinD holds this org's rootless-DinD lane settings (per-slot published-port
+	// partitioning). Only consulted when docker.rootlessDinD is on. See OrgDinD.
+	DinD OrgDinD `koanf:"dind" yaml:"dind,omitempty"`
 }
 
 // ResourceLimits are systemd (cgroup v2) resource directives applied to each

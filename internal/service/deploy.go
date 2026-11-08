@@ -136,6 +136,9 @@ func (m *Manager) orchestratorFor(org string) runner.Orchestrator {
 		DinD:          m.cfg.Docker.RootlessDinD,
 		BuildkitImage: m.cfg.Docker.BuildkitImage,
 	}
+	if oc, ok := m.cfg.Org(org); ok {
+		opts.DinDPorts = oc.DinD
+	}
 	// Auto-capacity mode bounds ALL runners' aggregate memory via a shared slice
 	// (machine-relative, so it scales with the host). Left empty otherwise, keeping
 	// the drop-in byte-identical to the historical output.

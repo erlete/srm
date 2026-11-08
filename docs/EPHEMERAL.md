@@ -138,6 +138,13 @@ closes. Enable DinD only on lanes that build images.
 user namespaces enabled. `srm doctor` probes all of these and the per-user subid
 range (allocated by `EnsureBase`).
 
+**Published ports across slots:** all slot daemons share the host's network for
+published ports, and each starts with the same default range, so parallel jobs that
+publish dynamic ports (testcontainers, `docker run -P`) collide with `bind: address
+already in use`. Set `orgs[].dind.portRange` to give every slot its own block of host
+ports (see "Published ports" in `docs/CONFIGURATION.md`); `srm doctor` shows each
+slot's assigned and effective range.
+
 ## Honest effects
 
 **Buys:** clean slate per job (fresh process + `PrivateTmp` + wiped `_work`, without

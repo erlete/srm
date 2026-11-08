@@ -256,6 +256,11 @@ type Options struct {
 	// with (see config.DefaultRootlessBuildkitImage). Only consulted when DinD is set;
 	// NewUbuntu fills the default when empty.
 	BuildkitImage string
+	// DinDPorts is the org's per-slot published-port partitioning (dind.portRange).
+	// When set, each cycle pins the slot's own block into the rootless daemon's
+	// network namespace before dockerd starts. Only consulted when DinD is set; the
+	// zero value leaves the daemon env byte-identical to before.
+	DinDPorts config.OrgDinD
 }
 
 type ubuntu struct {
@@ -1851,10 +1856,19 @@ func (u *ubuntu) startRootlessDocker(ctx context.Context, org, slot string, usr 
 	// stopRootlessDocker can reap the whole rootlesskit/dockerd tree. The daemon is NOT
 	// bound to ctx: a cancelled job ctx must not race the daemon down before
 	// stopRootlessDocker drains it - we own its lifecycle.
-	daemon := exec.Command("setpriv",
-		"--reuid", usr.Uid, "--regid", usr.Gid, "--init-groups", "--",
-		"env", "HOME="+home, "XDG_RUNTIME_DIR="+rt, "PATH="+pinnedPATH,
-		"dockerd-rootless.sh", "--config-file", cfgFile, "--data-root", dataRoot)
+	daemonArgv := []string{"--reuid", usr.Uid, "--regid", usr.Gid, "--init-groups", "--",
+		"env", "HOME=" + home, "XDG_RUNTIME_DIR=" + rt, "PATH=" + pinnedPATH}
+	// Per-slot published-port block (dind.portRange): DOCKERD points the rootless
+	// script at a wrapper that pins the block into the daemon's network namespace.
+	// A bad setting must not fail the job: log it and keep the default range.
+	if entry, note, err := u.dinDPortEnv(rt, org, slot); err != nil {
+		fmt.Fprintf(os.Stderr, "srm: %s/%s dind.portRange not applied, dockerd keeps the default range: %v\n", org, slot, err)
+	} else if entry != "" {
+		daemonArgv = append(daemonArgv, entry)
+		fmt.Fprintln(os.Stderr, note)
+	}
+	daemonArgv = append(daemonArgv, "dockerd-rootless.sh", "--config-file", cfgFile, "--data-root", dataRoot)
+	daemon := exec.Command("setpriv", daemonArgv...)
 	setProcessGroup(daemon)
 	daemon.Stdout, daemon.Stderr = os.Stderr, os.Stderr // daemon chatter to stderr, job stdout stays clean
 	if err := daemon.Start(); err != nil {

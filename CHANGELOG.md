@@ -6,6 +6,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Per-slot published-port ranges for rootless DinD** (`orgs[].dind.portRange`,
+  `orgs[].dind.portsPerSlot`). Every slot's rootless daemon used to start on the same
+  default range, so parallel jobs publishing dynamic ports (testcontainers,
+  `docker run -P`) asked for the same host port and failed with `RootlessKit
+  PortManager.AddPort(): ... bind: address already in use`. With a pool set, slot N
+  gets its own block of it, pinned in the slot's network namespace before the daemon
+  starts (the host sysctl is untouched, `--detach-netns` is kept). Opt-in per org,
+  off by default; it takes effect on each slot's next cycle with no unit change, and
+  a bad setting leaves that slot on the default range instead of failing the job.
+  The org form (`srm init`, `srm config edit-org`, the TUI) edits both fields.
+- `srm doctor` lists each org's pool and, for every local DinD slot, its assigned
+  block next to the range its running daemon actually uses (read from the slot's
+  network namespace), with warnings for overlapping pools, slots that do not fit,
+  and pools inside the host's ephemeral range. The Health tab shows a summary.
+
+### Fixed
+- **Editing an org dropped settings the form does not show.** `srm config edit-org`
+  and the TUI "Edit an org" replaced the whole org entry, silently resetting its
+  `profiles`, `resources` and `runnerUser`. The edit now only changes the fields the
+  form manages.
+
+### Security
+- Go toolchain directive bumped to 1.26.10, clearing the stdlib advisories
+  GO-2026-6809 (crypto/x509), GO-2026-6617, GO-2026-6613, GO-2026-6612,
+  GO-2026-6611, GO-2026-6610, GO-2026-6605, GO-2026-6603 (net/http), GO-2026-6608
+  (net/textproto) and GO-2026-6607 (crypto/tls).
+
 ## [2.5.1] - 2026-09-24
 
 ### Fixed

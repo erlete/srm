@@ -29,23 +29,32 @@ const (
 // OrgFields holds the raw string inputs the interactive org form binds to. It is the
 // single source of truth for the form shared by the CLI and the TUI.
 type OrgFields struct {
-	Name       string
-	AppIDStr   string
-	InstIDStr  string
-	KeyMode    string // KeyModePaste (default), KeyModePath, or KeyModeKeep (edit only)
-	KeyPaste   string // pasted PEM contents (paste mode); stored encrypted, never in config
-	KeyPath    string // path to a .pem on disk (path mode)
+	Name      string
+	AppIDStr  string
+	InstIDStr string
+	KeyMode   string // KeyModePaste (default), KeyModePath, or KeyModeKeep (edit only)
+	KeyPaste  string // pasted PEM contents (paste mode); stored encrypted, never in config
+	KeyPath   string // path to a .pem on disk (path mode)
 	// CurrentKeyPath is the org's existing PrivateKeyPath, carried through KeyModeKeep
 	// so an edit that keeps the current key preserves it (empty = key is in the store).
 	CurrentKeyPath string
 	GroupIDStr     string
-	LabelsStr  string
+	LabelsStr      string
 	// Passphrase / PassphraseConfirm are collected ONLY when paste mode needs to
 	// encrypt but no secrets passphrase exists yet. They are consumed to seed the age
 	// store and then discarded - never persisted to config.
 	Passphrase        string
 	PassphraseConfirm string
 	InstallRoot       string
+	// DinDPortRange / DinDPortsPerSlot bind orgs[].dind.portRange / portsPerSlot (the
+	// rootless-DinD per-slot published-port partition). Blank = off / default size.
+	DinDPortRange    string
+	DinDPortsPerSlot string
+
+	// base is the org being edited (zero when onboarding). ToOrgConfig starts from it
+	// so the fields this form does not show (profiles, resources, runnerUser, ...)
+	// survive an edit instead of being reset.
+	base config.OrgConfig
 }
 
 // DefaultOrgFields seeds the form with the conventional defaults. Paste is the
@@ -165,20 +174,57 @@ func OrgForm(f *OrgFields, keyDir string, passphraseKnown, edit bool) *huh.Form 
 			huh.NewInput().Title("Default labels (comma-separated)").Value(&f.LabelsStr),
 			huh.NewInput().Title("Runner install root").Value(&f.InstallRoot),
 		),
+		// Rootless DinD is Linux-only, so the partition fields are not offered on Windows.
+		huh.NewGroup(
+			huh.NewNote().Title("Rootless DinD published ports").Description("Used only when docker.rootlessDinD is on. Gives each ephemeral slot its own block of dynamic host ports, so parallel jobs never publish the same one. Pools of different orgs must not overlap. Leave blank to keep the default range."),
+			huh.NewInput().Title("Published-port pool (START-END, blank = off)").Placeholder("10000-29999").Value(&f.DinDPortRange).Validate(validDinDPool),
+			huh.NewInput().Title(fmt.Sprintf("Ports per slot (blank = %d)", config.DefaultDinDPortsPerSlot)).Value(&f.DinDPortsPerSlot).Validate(func(s string) error {
+				return validDinDPerSlot(f.DinDPortRange, s)
+			}),
+		).WithHideFunc(func() bool { return runtime.GOOS == "windows" }),
 		// A bounded width keeps the modal compact: without it huh expands to the full
 		// terminal and vertically justifies the group's fields (big gaps). Matches the
 		// settings/uninstall forms.
 	).WithWidth(66)
 }
 
+// validDinDPool accepts a blank pool (partitioning off) or a valid START-END range.
+func validDinDPool(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	_, _, err := config.ParsePortRange(s)
+	return err
+}
+
+// validDinDPerSlot accepts a blank block size (the default) or a positive number that
+// fits the pool (when one is set).
+func validDinDPerSlot(pool, s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return fmt.Errorf("must be a positive number")
+	}
+	if strings.TrimSpace(pool) == "" || validDinDPool(pool) != nil {
+		return nil
+	}
+	_, _, _, err = config.OrgDinD{PortRange: pool, PortsPerSlot: n}.Pool()
+	return err
+}
+
 // ToOrgConfig parses collected fields into an OrgConfig (numbers already validated by
 // the form). Paste mode leaves PrivateKeyPath empty (the key resolves from the secrets
 // store under "app_key:<org>"; the caller stores it via StoreOrgKey); keep mode carries
-// the org's current PrivateKeyPath through unchanged.
+// the org's current PrivateKeyPath through unchanged. When the fields came from
+// FieldsFromOrgConfig, every OrgConfig field the form does not manage is preserved.
 func (f OrgFields) ToOrgConfig() config.OrgConfig {
 	appID, _ := strconv.ParseInt(strings.TrimSpace(f.AppIDStr), 10, 64)
 	instID, _ := strconv.ParseInt(strings.TrimSpace(f.InstIDStr), 10, 64)
 	groupID, _ := strconv.ParseInt(strings.TrimSpace(f.GroupIDStr), 10, 64)
+	perSlot, _ := strconv.Atoi(strings.TrimSpace(f.DinDPortsPerSlot))
 	keyPath := strings.TrimSpace(f.KeyPath)
 	switch f.KeyMode {
 	case KeyModePaste:
@@ -186,15 +232,16 @@ func (f OrgFields) ToOrgConfig() config.OrgConfig {
 	case KeyModeKeep:
 		keyPath = f.CurrentKeyPath
 	}
-	return config.OrgConfig{
-		Name:           strings.TrimSpace(f.Name),
-		AppID:          appID,
-		InstallationID: instID,
-		PrivateKeyPath: keyPath,
-		DefaultGroupID: groupID,
-		DefaultLabels:  SplitCSV(f.LabelsStr),
-		InstallRoot:    strings.TrimSpace(f.InstallRoot),
-	}
+	oc := f.base
+	oc.Name = strings.TrimSpace(f.Name)
+	oc.AppID = appID
+	oc.InstallationID = instID
+	oc.PrivateKeyPath = keyPath
+	oc.DefaultGroupID = groupID
+	oc.DefaultLabels = SplitCSV(f.LabelsStr)
+	oc.InstallRoot = strings.TrimSpace(f.InstallRoot)
+	oc.DinD = config.OrgDinD{PortRange: strings.TrimSpace(f.DinDPortRange), PortsPerSlot: perSlot}
+	return oc
 }
 
 // FieldsFromOrgConfig seeds the form from an existing org for the edit flow: numbers
@@ -206,16 +253,23 @@ func FieldsFromOrgConfig(oc config.OrgConfig) OrgFields {
 	if strings.TrimSpace(installRoot) == "" {
 		installRoot = config.DefaultInstallRoot
 	}
+	perSlot := ""
+	if oc.DinD.PortsPerSlot != 0 {
+		perSlot = strconv.Itoa(oc.DinD.PortsPerSlot)
+	}
 	return OrgFields{
-		Name:           oc.Name,
-		AppIDStr:       strconv.FormatInt(oc.AppID, 10),
-		InstIDStr:      strconv.FormatInt(oc.InstallationID, 10),
-		KeyMode:        KeyModeKeep,
-		KeyPath:        oc.PrivateKeyPath,
-		CurrentKeyPath: oc.PrivateKeyPath,
-		GroupIDStr:     strconv.FormatInt(oc.DefaultGroupID, 10),
-		LabelsStr:      strings.Join(oc.DefaultLabels, ","),
-		InstallRoot:    installRoot,
+		Name:             oc.Name,
+		AppIDStr:         strconv.FormatInt(oc.AppID, 10),
+		InstIDStr:        strconv.FormatInt(oc.InstallationID, 10),
+		KeyMode:          KeyModeKeep,
+		KeyPath:          oc.PrivateKeyPath,
+		CurrentKeyPath:   oc.PrivateKeyPath,
+		GroupIDStr:       strconv.FormatInt(oc.DefaultGroupID, 10),
+		LabelsStr:        strings.Join(oc.DefaultLabels, ","),
+		InstallRoot:      installRoot,
+		DinDPortRange:    oc.DinD.PortRange,
+		DinDPortsPerSlot: perSlot,
+		base:             oc,
 	}
 }
 
