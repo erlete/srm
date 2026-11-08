@@ -13,8 +13,8 @@ and the shipped artifact is a static `linux/amd64` build.
 
 ## 1. Prerequisites
 
-- **Go** matching the version in [`go.mod`](go.mod) (`go 1.26.4`). CI reads the
-  version from `go.mod`, so match it locally to avoid surprises.
+- **Go** matching the `go` directive in [`go.mod`](go.mod). CI reads the version
+  from `go.mod`, so match it locally to avoid surprises.
 - **make** (the [`Makefile`](Makefile) is the canonical build/test entrypoint).
 - For end-to-end work, an Ubuntu x64 host you control. **Never** test destructive
   lifecycle commands (`uninstall`, `runners destroy`, in-place updates) against a
@@ -152,14 +152,10 @@ Releases are cut from `stable` and built by
    git push origin vX.Y.Z
    ```
 
-4. The release workflow builds the static `srm-vX.Y.Z-ubuntu-x64` binary + its
-   `.sha256` and publishes a GitHub Release (`--verify-tag`). Hosts install by
-   downloading the artifact and verifying the checksum.
-
-> Forward-looking: in-tool **self-update** (roadmap v1.2) requires **signed**
-> release artifacts, not checksum-only - see
-> [docs/design/v1.1-lifecycle.md](docs/design/v1.1-lifecycle.md). Until then,
-> releases are checksum-verified and installed manually/scripted.
+4. The release workflow builds the static `srm-vX.Y.Z-ubuntu-x64` binary and the
+   `srm-vX.Y.Z-windows-x64.exe` binary, each with its `.sha256`, and publishes a
+   GitHub Release (`--verify-tag`). Hosts install by downloading the artifact and
+   verifying the checksum (`install.sh` / `install.ps1`).
 
 ---
 
