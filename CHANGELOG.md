@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-11-08
+
+### Fixed
+- **Partitioned DinD slots could run out of source ports under short connections.**
+  The slot's port block (2.6.0) is also the source-port range for the two proxy hops
+  inside the slot's network namespace (RootlessKit's forwarder and `docker-proxy`),
+  and `docker-proxy`'s dial to the container held each source port in TIME_WAIT for
+  60 seconds. A 500-port block therefore capped a published port at about 8 new
+  connections per second, after which connections failed silently
+  (`connect: cannot assign requested address`, `curl: Empty reply from server`). srm
+  now also sets `net.ipv4.tcp_tw_reuse=1` in that namespace (outgoing connections
+  only, host untouched), which lifts the cap to roughly `portsPerSlot` new
+  connections per second. It applies on each slot's next cycle with no config change.
+
+### Changed
+- `srm doctor` shows each DinD slot's effective `tcp_tw_reuse`; a slot counts as
+  `pinned` only once its daemon runs with both the block and the reuse setting.
+
 ## [2.6.0] - 2026-11-08
 
 ### Added
@@ -576,7 +594,8 @@ Validated on a live two-org, single-host deployment (8 cores, 15 GB):
 - Ephemeral lanes wipe `_diag`/`_work` each cycle, so on-disk job history is a
   persistent-runner concept.
 
-[Unreleased]: https://github.com/erlete/srm/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/erlete/srm/compare/v2.6.1...HEAD
+[2.6.1]: https://github.com/erlete/srm/compare/v2.6.0...v2.6.1
 [2.6.0]: https://github.com/erlete/srm/compare/v2.5.1...v2.6.0
 [2.5.1]: https://github.com/erlete/srm/compare/v2.5.0...v2.5.1
 [2.5.0]: https://github.com/erlete/srm/compare/v2.4.0...v2.5.0

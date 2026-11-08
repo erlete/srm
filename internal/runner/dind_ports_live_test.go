@@ -19,8 +19,8 @@ import (
 
 // TestLiveDinDPortRanges drives the REAL rootless-DinD start path for two slots of one
 // org on this host and proves each daemon publishes dynamic ports only inside its own
-// dind.portRange block, and that ReadDinDPortRange reads that block back from the
-// slot's network namespace. It needs root, an installed rootless Docker
+// dind.portRange block, and that ReadDinDNetns reads that block (and tcp_tw_reuse=1)
+// back from the slot's network namespace. It needs root, an installed rootless Docker
 // (dockerd-rootless.sh + rootlesskit + uidmap + slirp4netns) and an unprivileged user
 // with a subuid/subgid range, so it is opt-in:
 //
@@ -85,9 +85,9 @@ func TestLiveDinDPortRanges(t *testing.T) {
 	}
 
 	for slot, w := range want {
-		lo, hi, err := ReadDinDPortRange(ctx, org, slot)
-		if err != nil || lo != w[0] || hi != w[1] {
-			t.Fatalf("slot %s effective range = %d-%d, %v; want %d-%d", slot, lo, hi, err, w[0], w[1])
+		ns, err := ReadDinDNetns(ctx, org, slot)
+		if err != nil || ns.PortLo != w[0] || ns.PortHi != w[1] || ns.TWReuse != 1 {
+			t.Fatalf("slot %s netns = %+v, %v; want range %d-%d with tcp_tw_reuse 1", slot, ns, err, w[0], w[1])
 		}
 	}
 

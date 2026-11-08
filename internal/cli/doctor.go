@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -86,7 +87,7 @@ func printDinDPortRanges(rep service.DinDPortReport) {
 		}
 	}
 	if len(rep.Slots) > 0 {
-		fmt.Printf("  %-24s %-13s %-13s %s\n", "slot", "configured", "effective", "state")
+		fmt.Printf("  %-24s %-13s %-13s %-9s %s\n", "slot", "configured", "effective", "tw_reuse", "state")
 		for _, s := range rep.Slots {
 			want := "default"
 			if s.Partitioned {
@@ -95,9 +96,9 @@ func printDinDPortRanges(rep service.DinDPortReport) {
 					want = fmt.Sprintf("%d-%d", s.WantLo, s.WantHi)
 				}
 			}
-			eff := "-"
+			eff, reuse := "-", "-"
 			if s.EffErr == "" {
-				eff = fmt.Sprintf("%d-%d", s.EffLo, s.EffHi)
+				eff, reuse = fmt.Sprintf("%d-%d", s.EffLo, s.EffHi), strconv.Itoa(s.EffTWReuse)
 			}
 			state := s.State
 			switch s.State {
@@ -108,7 +109,7 @@ func printDinDPortRanges(rep service.DinDPortReport) {
 			case service.PortStateUnreadable:
 				state += ": " + s.EffErr
 			}
-			fmt.Printf("  %-24s %-13s %-13s %s\n", s.Org+"/"+s.Slot, want, eff, state)
+			fmt.Printf("  %-24s %-13s %-13s %-9s %s\n", s.Org+"/"+s.Slot, want, eff, reuse, state)
 		}
 	}
 	for _, w := range rep.Warnings {

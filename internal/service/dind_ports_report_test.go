@@ -11,23 +11,28 @@ import (
 
 func portCfg(orgs ...config.OrgConfig) *config.Config { return &config.Config{Orgs: orgs} }
 
+func netns(lo, hi, reuse int) runner.DinDNetns {
+	return runner.DinDNetns{PortLo: lo, PortHi: hi, TWReuse: reuse}
+}
+
 func TestDinDPortReportStates(t *testing.T) {
 	cfg := portCfg(
-		config.OrgConfig{Name: "acme", DinD: config.OrgDinD{PortRange: "10000-10999", PortsPerSlot: 500}},
+		config.OrgConfig{Name: "acme", DinD: config.OrgDinD{PortRange: "10000-11499", PortsPerSlot: 500}},
 		config.OrgConfig{Name: "globex"},
 	)
-	slots := []localSlot{{"acme", "2"}, {"acme", "1"}, {"acme", "3"}, {"acme", "4"}, {"globex", "1"}}
-	eff := map[string][2]int{
-		"acme/1":   {10000, 10499}, // already on its block
-		"acme/2":   {32768, 60999}, // daemon predates the change
-		"acme/3":   {32768, 60999}, // slot 3 does not fit a 2-slot pool
-		"globex/1": {32768, 60999},
+	slots := []localSlot{{"acme", "2"}, {"acme", "1"}, {"acme", "3"}, {"acme", "4"}, {"acme", "5"}, {"globex", "1"}}
+	eff := map[string]runner.DinDNetns{
+		"acme/1":   netns(10000, 10499, 1), // on its block with reuse: pinned
+		"acme/2":   netns(32768, 60999, 2), // daemon predates the partition
+		"acme/3":   netns(11000, 11499, 2), // block applied by v2.6.0, reuse not yet
+		"acme/4":   netns(32768, 60999, 2), // slot 4 does not fit a 3-slot pool
+		"globex/1": netns(32768, 60999, 2),
 	}
-	read := func(org, slot string) (int, int, error) {
+	read := func(org, slot string) (runner.DinDNetns, error) {
 		if r, ok := eff[org+"/"+slot]; ok {
-			return r[0], r[1], nil
+			return r, nil
 		}
-		return 0, 0, runner.ErrDinDNotRunning
+		return runner.DinDNetns{}, runner.ErrDinDNotRunning
 	}
 	rep := buildDinDPortReport(cfg, []string{"acme", "globex"}, slots, read, "")
 	if !rep.Enabled || !rep.AnyPartitioned() {
@@ -36,8 +41,9 @@ func TestDinDPortReportStates(t *testing.T) {
 	want := map[string]string{
 		"acme/1":   PortStatePinned,
 		"acme/2":   PortStatePending,
-		"acme/3":   PortStateNotApplied,
+		"acme/3":   PortStatePending,
 		"acme/4":   PortStateNotApplied,
+		"acme/5":   PortStateNotApplied,
 		"globex/1": PortStateDefault,
 	}
 	var order []string
@@ -47,21 +53,24 @@ func TestDinDPortReportStates(t *testing.T) {
 			t.Errorf("%s/%s state %q, want %q (%+v)", s.Org, s.Slot, s.State, want[s.Org+"/"+s.Slot], s)
 		}
 	}
-	if strings.Join(order, ",") != "acme/1,acme/2,acme/3,acme/4,globex/1" {
+	if strings.Join(order, ",") != "acme/1,acme/2,acme/3,acme/4,acme/5,globex/1" {
 		t.Errorf("slots not ordered by org then slot number: %v", order)
 	}
-	if rep.Orgs[0].Pool != "10000-10999" || rep.Orgs[0].Capacity != 2 || rep.Orgs[1].Partitioned {
+	if rep.Slots[0].EffTWReuse != 1 {
+		t.Errorf("tcp_tw_reuse not carried into the slot: %+v", rep.Slots[0])
+	}
+	if rep.Orgs[0].Pool != "10000-11499" || rep.Orgs[0].Capacity != 3 || rep.Orgs[1].Partitioned {
 		t.Errorf("org pools wrong: %+v", rep.Orgs)
 	}
 }
 
 func TestDinDPortReportNotRunningAndUnreadable(t *testing.T) {
 	cfg := portCfg(config.OrgConfig{Name: "acme", DinD: config.OrgDinD{PortRange: "10000-19999"}})
-	read := func(_, slot string) (int, int, error) {
+	read := func(_, slot string) (runner.DinDNetns, error) {
 		if slot == "1" {
-			return 0, 0, runner.ErrDinDNotRunning
+			return runner.DinDNetns{}, runner.ErrDinDNotRunning
 		}
-		return 0, 0, errors.New("needs root to enter the slot's network namespace")
+		return runner.DinDNetns{}, errors.New("needs root to enter the slot's network namespace")
 	}
 	rep := buildDinDPortReport(cfg, []string{"acme"}, []localSlot{{"acme", "1"}, {"acme", "2"}}, read, "")
 	if rep.Slots[0].State != PortStateNotRunning || rep.Slots[1].State != PortStateUnreadable {
@@ -70,7 +79,7 @@ func TestDinDPortReportNotRunningAndUnreadable(t *testing.T) {
 }
 
 func TestDinDPortReportWarnings(t *testing.T) {
-	never := func(string, string) (int, int, error) { return 0, 0, runner.ErrDinDNotRunning }
+	never := func(string, string) (runner.DinDNetns, error) { return runner.DinDNetns{}, runner.ErrDinDNotRunning }
 
 	// Pools outside the default and host ranges, every DinD org partitioned: no warnings.
 	clean := portCfg(

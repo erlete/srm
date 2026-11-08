@@ -19,6 +19,8 @@ func TestRenderDinDPortWrapper(t *testing.T) {
 		`netns="$ROOTLESSKIT_STATE_DIR/netns"`,
 		`nsenter -n"$netns" sysctl -q -w net.ipv4.ip_local_port_range="10500 10999"`,
 		"published-port range 10500-10999; dockerd keeps the default range",
+		`nsenter -n"$netns" sysctl -q -w net.ipv4.tcp_tw_reuse=1`,
+		"could not enable tcp_tw_reuse",
 		"exec dockerd \"$@\"\n",
 	} {
 		if !strings.Contains(w, want) {
@@ -86,15 +88,19 @@ func TestDinDPortEnvSlotPastPool(t *testing.T) {
 	}
 }
 
-func TestParsePortRangeSysctl(t *testing.T) {
-	lo, hi, err := parsePortRangeSysctl("10500\t10999\n")
-	if err != nil || lo != 10500 || hi != 10999 {
-		t.Fatalf("got %d %d %v", lo, hi, err)
+func TestParseDinDNetns(t *testing.T) {
+	got, err := parseDinDNetns("10500\t10999\n1\n")
+	if err != nil || got != (DinDNetns{PortLo: 10500, PortHi: 10999, TWReuse: 1}) {
+		t.Fatalf("got %+v %v", got, err)
 	}
-	for _, bad := range []string{"", "10500", "a b", "1 2 3"} {
-		if _, _, err := parsePortRangeSysctl(bad); err == nil {
+	for _, bad := range []string{"", "10500 10999", "a b c", "1 2 3 4", "10500\t10999\nx\n"} {
+		if _, err := parseDinDNetns(bad); err == nil {
 			t.Errorf("accepted %q", bad)
 		}
+	}
+	// The read command and the parser agree on order: range first, then reuse.
+	if len(dinDNetnsReadArgs) != 3 || !strings.HasSuffix(dinDNetnsReadArgs[1], "ip_local_port_range") || !strings.HasSuffix(dinDNetnsReadArgs[2], "tcp_tw_reuse") {
+		t.Fatalf("read args out of sync with parseDinDNetns: %v", dinDNetnsReadArgs)
 	}
 }
 
@@ -175,6 +181,7 @@ func TestDinDPortWrapperExec(t *testing.T) {
 	t.Run("detached netns", func(t *testing.T) {
 		calls, stderr := run(t, 0, true)
 		want := "nsenter -n$STATE/netns sysctl -q -w net.ipv4.ip_local_port_range=10500 10999\n" +
+			"nsenter -n$STATE/netns sysctl -q -w net.ipv4.tcp_tw_reuse=1\n" +
 			"dockerd --config-file /x/daemon.json --data-root /x/data\n"
 		if calls != want {
 			t.Fatalf("calls:\n%s\nwant:\n%s", calls, want)
@@ -194,8 +201,8 @@ func TestDinDPortWrapperExec(t *testing.T) {
 		if !strings.Contains(calls, "dockerd --config-file /x/daemon.json --data-root /x/data") {
 			t.Fatalf("dockerd must still start when the sysctl write fails: %q", calls)
 		}
-		if !strings.Contains(stderr, "could not pin the published-port range 10500-10999") {
-			t.Fatalf("missing fail-open warning: %q", stderr)
+		if !strings.Contains(stderr, "could not pin the published-port range 10500-10999") || !strings.Contains(stderr, "could not enable tcp_tw_reuse") {
+			t.Fatalf("missing fail-open warnings: %q", stderr)
 		}
 	})
 }

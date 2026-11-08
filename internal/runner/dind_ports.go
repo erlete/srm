@@ -35,20 +35,36 @@ var ErrDinDNotRunning = errors.New("no running rootless dockerd for this slot")
 // daemon hands out inside the block, so sibling slots can no longer pick the same port.
 // The host's own sysctl is never touched.
 //
-// Fail-open: if the write fails, dockerd still starts on the kernel default range
-// (the pre-partitioning behavior) and the reason lands in the slot's journal.
+// The same sysctl is also the source-port range for the connections made INSIDE that
+// netns, and every inbound connection to a published port makes two of them: the
+// RootlessKit child dials 127.0.0.1:<port>, and docker-proxy dials <container>:<port>
+// over the bridge. When the client closes first (the normal HTTP/1.1 case), the
+// docker-proxy dial parks its source port in TIME_WAIT for 60 s, and only loopback
+// TIME_WAITs are reusable by default (tcp_tw_reuse=2), so a narrow block would cap a
+// published port at about blockSize/60 new connections per second before connect()
+// fails with EADDRNOTAVAIL - silently, as docker-proxy's output goes nowhere.
+// tcp_tw_reuse=1 (per netns, outgoing connects only, safe with the default TCP
+// timestamps) lets those TIME_WAITs be reused after a second, lifting the cap to
+// roughly blockSize new connections per second. Measured live on Docker 29.8.2.
+//
+// Fail-open: if a write fails, dockerd still starts (on the kernel default range when
+// the range write is the one that failed) and the reason lands in the slot's journal.
 func renderDinDPortWrapper(lo, hi int) string {
 	rng := strconv.Itoa(lo) + " " + strconv.Itoa(hi)
 	return `#!/bin/sh
 # Managed by srm (rewritten every ephemeral cycle). Pins this slot's published-port
-# range in the network namespace where the rootless dockerd maps ports, then execs
-# dockerd. See dind.portRange in docs/CONFIGURATION.md.
+# range in the network namespace where the rootless dockerd maps ports, lets the
+# proxy hops in that namespace reuse TIME_WAIT source ports, then execs dockerd.
+# See dind.portRange in docs/CONFIGURATION.md.
 netns=/proc/self/ns/net
 if [ -n "$ROOTLESSKIT_STATE_DIR" ] && [ -e "$ROOTLESSKIT_STATE_DIR/netns" ]; then
 	netns="$ROOTLESSKIT_STATE_DIR/netns"
 fi
 if ! nsenter -n"$netns" sysctl -q -w net.ipv4.ip_local_port_range="` + rng + `"; then
 	echo "srm: could not pin the published-port range ` + strconv.Itoa(lo) + "-" + strconv.Itoa(hi) + `; dockerd keeps the default range" >&2
+fi
+if ! nsenter -n"$netns" sysctl -q -w net.ipv4.tcp_tw_reuse=1; then
+	echo "srm: could not enable tcp_tw_reuse; short connections to published ports may run out of source ports" >&2
 fi
 exec dockerd "$@"
 `
@@ -113,17 +129,30 @@ func dinDNetnsViaChild(state string) (string, error) {
 	return "/proc/" + strconv.Itoa(pid) + "/root" + filepath.ToSlash(state) + "/netns", nil
 }
 
-// parsePortRangeSysctl parses the "LO\tHI" contents of ip_local_port_range.
-func parsePortRangeSysctl(s string) (lo, hi int, err error) {
+// DinDNetns is what a slot's running rootless dockerd network namespace actually uses.
+type DinDNetns struct {
+	PortLo, PortHi int // net.ipv4.ip_local_port_range
+	TWReuse        int // net.ipv4.tcp_tw_reuse (srm sets 1 when the org partitions ports)
+}
+
+// dinDNetnsReadArgs is the command run inside the slot's namespace: both sysctls in
+// one exec, parsed by parseDinDNetns.
+var dinDNetnsReadArgs = []string{"cat", "/proc/sys/net/ipv4/ip_local_port_range", "/proc/sys/net/ipv4/tcp_tw_reuse"}
+
+// parseDinDNetns parses "LO\tHI\nREUSE\n" (ip_local_port_range then tcp_tw_reuse).
+func parseDinDNetns(s string) (DinDNetns, error) {
 	f := strings.Fields(s)
-	if len(f) != 2 {
-		return 0, 0, fmt.Errorf("unexpected ip_local_port_range %q", strings.TrimSpace(s))
+	bad := fmt.Errorf("unexpected slot network namespace sysctls %q", strings.TrimSpace(s))
+	if len(f) != 3 {
+		return DinDNetns{}, bad
 	}
-	if lo, err = strconv.Atoi(f[0]); err != nil {
-		return 0, 0, fmt.Errorf("unexpected ip_local_port_range %q", strings.TrimSpace(s))
+	var n [3]int
+	for i, v := range f {
+		x, err := strconv.Atoi(v)
+		if err != nil {
+			return DinDNetns{}, bad
+		}
+		n[i] = x
 	}
-	if hi, err = strconv.Atoi(f[1]); err != nil {
-		return 0, 0, fmt.Errorf("unexpected ip_local_port_range %q", strings.TrimSpace(s))
-	}
-	return lo, hi, nil
+	return DinDNetns{PortLo: n[0], PortHi: n[1], TWReuse: n[2]}, nil
 }

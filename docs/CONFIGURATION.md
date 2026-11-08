@@ -151,14 +151,22 @@ the daemon starts; the host's `net.ipv4.ip_local_port_range` is never changed.
   net.ipv4.ip_local_port_range`, usually `32768-60999`). Inside it, the host's own
   outbound connections, and the daemons of orgs with no pool, draw from the same
   ports. Keep clear of ports that services on the host listen on.
+- **Size the block for connections, too.** The block is also the source-port range
+  of the two proxy hops inside the slot's namespace (RootlessKit's forwarder and
+  `docker-proxy`), one pair per inbound connection to a published port. srm sets
+  `net.ipv4.tcp_tw_reuse=1` there, so a published port sustains roughly
+  `portsPerSlot` new connections per second (without it, closed connections would
+  hold their source port for 60 seconds). A job that opens more short-lived
+  connections than that to one published port needs a larger `portsPerSlot`.
 - **Explicit host ports** (`-p 8080:80`) are not partitioned: two jobs that publish
   the same fixed port still collide, and a fixed port inside another slot's block can
   take that port from it.
 
 `srm doctor` prints each pool and, for every local slot, the block it is assigned next
-to the range its running daemon actually uses, read from the slot's network namespace
-(`pinned`, `pending` until its next cycle, `not applied`, `default`, or `not running`),
-plus warnings for overlapping pools. Run it as root. The Health tab shows a summary.
+to the range and `tcp_tw_reuse` its running daemon actually uses, read from the slot's
+network namespace (`pinned`, `pending` until its next cycle, `not applied`, `default`,
+or `not running`), plus warnings for overlapping pools. Run it as root. The Health tab
+shows a summary.
 
 ## Host (`host`)
 
