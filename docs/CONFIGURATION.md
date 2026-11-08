@@ -140,13 +140,17 @@ orgs:
 Slot `N` gets `[start + (N-1)*portsPerSlot, start + N*portsPerSlot - 1]`, so here
 slot 1 publishes from `10000-10499`, slot 2 from `10500-10999`, and the pool has room
 for 40 slots. srm pins the block inside the slot's own network namespace right before
-the daemon starts; the host's `net.ipv4.ip_local_port_range` is never changed.
+the daemon starts, through a small root-owned wrapper it installs at
+`/usr/local/lib/srm/dockerd-port-wrapper`; the host's `net.ipv4.ip_local_port_range`
+is never changed.
 
 - **Applies per cycle.** Each cycle re-reads `config.yaml`, so a slot picks up a new
   or removed pool when its current job ends. No unit change, recreate, or restart.
-- **Fail-open.** A malformed pool, or a slot past the end of its pool, leaves that
-  slot on the default range (the previous behavior) and logs the reason to the slot's
-  journal. `srm doctor` lists it.
+- **Fail-open.** A malformed pool, a slot past the end of its pool, or a wrapper the
+  runner user cannot execute (for example `/usr/local/lib` on a `noexec` mount) leaves
+  that slot on the default range (the previous behavior) and logs the reason to the
+  slot's journal. If the daemon still fails to start with the wrapper, srm relaunches
+  it without the wrapper in the same cycle. `srm doctor` lists all of these.
 - **Pick pools outside the host's ephemeral range** (`sysctl
   net.ipv4.ip_local_port_range`, usually `32768-60999`). Inside it, the host's own
   outbound connections, and the daemons of orgs with no pool, draw from the same
