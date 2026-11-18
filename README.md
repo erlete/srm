@@ -217,9 +217,10 @@ sudo srm runners destroy srm-ci-2 --org acme
 # so pass the full set to match `runs-on: [self-hosted, temporal]`:
 sudo srm runners create --ephemeral --count 10 --org acme \
      --labels self-hosted,Linux,X64,temporal --group temporal
-sudo srm runners destroy --ephemeral --slot 3 --org acme            # drain + remove a slot
+sudo srm runners destroy --ephemeral --slot 3 --org acme            # remove an idle slot (--force: even busy)
+sudo srm runners recreate --ephemeral --slot 3,4 --org acme         # same id/group/labels, new unit; skips busy
 
-sudo srm runners refresh [--org acme]      # re-apply drop-ins (cache/caps/isolation); migrate in place
+sudo srm runners refresh [--org acme]      # re-apply units (cache/caps/isolation); recreates out-of-date idle slots
 sudo srm runners upgrade [--org acme]      # upgrade the runner AGENT in place, idle-only (--dry-run/--rollback/--to-version)
 sudo srm cache prune                       # evict stale build-tool cache entries
 sudo srm reconcile [--fix] [--org acme]    # audit host vs GitHub drift + health + OOM; --fix repairs host-side

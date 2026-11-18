@@ -156,7 +156,7 @@ func (m *Manager) Uninstall(ctx context.Context, opts UninstallOpts) (UninstallR
 		if opts.KeepGitHub {
 			derr = m.orchestratorFor(e.org).RemoveEphemeralSlot(ctx, e.org, e.slot)
 		} else {
-			derr = m.DestroyEphemeralSlot(ctx, e.org, e.slot)
+			derr = m.destroyEphemeralSlot(ctx, e.org, e.slot, opts.Force) // --force must not stop at a busy slot
 		}
 		if derr != nil {
 			rep.Errors = append(rep.Errors, fmt.Sprintf("ephemeral %s/%s: %v", e.org, e.slot, derr))

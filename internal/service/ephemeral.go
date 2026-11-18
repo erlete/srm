@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -24,6 +25,7 @@ type EphemeralSlot struct {
 	Active     bool
 	Restarts   int
 	UnitOK     bool
+	UnitNewer  bool     // the on-disk unit is a NEWER template generation than this srm (leave it alone)
 	LastResult string   // systemd Result of the last cycle ("success" = clean churn); drives the crash-loop sub-state
 	MemPeak    int64    // cgroup bytes, -1 unknown
 	MemMax     int64    // cgroup bytes, -1 unlimited/unknown
@@ -62,7 +64,7 @@ func (m *Manager) ListEphemeralSlots(ctx context.Context, orgFilter string) ([]E
 		insp := orch.InspectEphemeral(ctx, org, slot)
 		es := EphemeralSlot{
 			Org: org, Slot: slot, Active: insp.Active, Restarts: insp.Restarts,
-			UnitOK: insp.UnitOK, LastResult: insp.LastResult,
+			UnitOK: insp.UnitOK, UnitNewer: insp.UnitNewer, LastResult: insp.LastResult,
 			MemPeak: insp.MemPeakBytes, MemMax: insp.MemMaxBytes,
 			MemCur: insp.MemCurBytes, OOMKills: insp.OOMKills,
 		}
@@ -226,10 +228,27 @@ func (m *Manager) CreateEphemeralRunners(ctx context.Context, spec DeploySpec, p
 	return slots, nil
 }
 
+// ErrSlotBusy reports that an ephemeral slot is running a job, so tearing it down
+// (destroy, recreate) would kill that job.
+var ErrSlotBusy = errors.New("slot is running a job")
+
 // DestroyEphemeralSlot removes a slot lane from THIS host (stops + deletes its
-// unit and tree) and deregisters any in-flight JIT registration from GitHub. Must
-// run as root. Honors dry-run.
+// unit and tree) and deregisters its JIT registration from GitHub. It refuses a
+// slot that is running a job (ErrSlotBusy) or whose state it cannot read on
+// GitHub; see ForceDestroyEphemeralSlot. Must run as root. Honors dry-run.
 func (m *Manager) DestroyEphemeralSlot(ctx context.Context, org, slot string) error {
+	return m.destroyEphemeralSlot(ctx, org, slot, false)
+}
+
+// ForceDestroyEphemeralSlot is DestroyEphemeralSlot without the busy check: it
+// tears the slot down even while it runs a job (killing it) or when GitHub is
+// unreachable (a registration left behind is reaped by `srm reconcile
+// --reap-ephemeral`). For a hung slot.
+func (m *Manager) ForceDestroyEphemeralSlot(ctx context.Context, org, slot string) error {
+	return m.destroyEphemeralSlot(ctx, org, slot, true)
+}
+
+func (m *Manager) destroyEphemeralSlot(ctx context.Context, org, slot string, force bool) error {
 	org, err := m.requireOrg(org)
 	if err != nil {
 		return err
@@ -241,14 +260,8 @@ func (m *Manager) DestroyEphemeralSlot(ctx context.Context, org, slot string) er
 		return nil
 	}
 	orch := m.orchestratorFor(org)
-	// Deregister a still-registered runner before tearing the lane down so it
-	// doesn't linger on GitHub as an offline ghost (404 = already gone, fine).
-	if id := orch.PendingJIT(org, slot); id != 0 {
-		if c, err := m.client(ctx, org); err == nil {
-			if derr := c.DeleteRunner(ctx, org, id); derr != nil && !ghub.IsNotFound(derr) {
-				return fmt.Errorf("deregister ephemeral runner %d: %w (reap later with `srm reconcile --reap-ephemeral`)", id, derr)
-			}
-		}
+	if err := m.releaseSlotRunner(ctx, orch, org, slot, force); err != nil {
+		return err
 	}
 	err = orch.RemoveEphemeralSlot(ctx, org, slot)
 	// The lane is gone; drop its manifest entry (advisory).
@@ -457,4 +470,41 @@ func backoffSleep(ctx context.Context) {
 	case <-time.After(5*time.Second + jitter):
 	case <-ctx.Done():
 	}
+}
+
+// releaseSlotRunner deregisters the slot's recorded JIT runner before its lane is
+// torn down, so GitHub can no longer hand it a job and it does not linger as an
+// offline ghost. A slot with no recorded runner is between cycles: no job can be
+// running on it. Unless force, it refuses (without deregistering) a runner that
+// GitHub reports busy, and one whose state it cannot read, since tearing the lane
+// down would kill a job. The check and the deregistration are two API calls, so a
+// job assigned in the milliseconds between them is the one case left.
+func (m *Manager) releaseSlotRunner(ctx context.Context, orch runner.Orchestrator, org, slot string, force bool) error {
+	id := orch.PendingJIT(org, slot)
+	if id == 0 {
+		return nil
+	}
+	c, err := m.client(ctx, org)
+	if err != nil {
+		if force {
+			return nil
+		}
+		return fmt.Errorf("slot %s: cannot check its runner on GitHub (%v); --force tears it down anyway", slot, err)
+	}
+	if !force {
+		r, gerr := c.GetRunner(ctx, org, id)
+		switch {
+		case gerr == nil && r.Busy:
+			return fmt.Errorf("slot %s (%s): %w; retry when it finishes, or --force kills it", slot, org, ErrSlotBusy)
+		case gerr != nil && !ghub.IsNotFound(gerr):
+			return fmt.Errorf("slot %s: cannot check runner %d on GitHub: %w; --force tears it down anyway", slot, id, gerr)
+		}
+	}
+	if derr := c.DeleteRunner(ctx, org, id); derr != nil && !ghub.IsNotFound(derr) {
+		if force {
+			return nil // reaped later by `srm reconcile --reap-ephemeral`
+		}
+		return fmt.Errorf("deregister ephemeral runner %d (it may have just taken a job): %w", id, derr)
+	}
+	return nil
 }

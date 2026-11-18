@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-11-18
+
+### Added
+- `srm runners recreate --ephemeral (--slot N[,M...] | --all) [--org]` recreates
+  ephemeral slots from the CLI with the same slot id, runner group and labels, so
+  they pick up unit changes. It prints one line per slot and exits non-zero when a
+  slot was busy or failed, so a script can run it again for those.
+- `srm runners destroy --ephemeral --slot N --force` destroys a slot even while it
+  runs a job, for a hung slot.
+
+### Fixed
+- **Destroying or recreating an ephemeral slot killed the job running on it.** The
+  TUI's `d` and `c` on the Ephemeral tab and `srm runners destroy --ephemeral`
+  stopped the slot without checking it. srm now asks GitHub whether the slot's
+  runner is busy and refuses if it is, and deregisters the runner before stopping
+  the slot, so GitHub cannot hand it a new job in between. If GitHub cannot be
+  reached it refuses too, instead of tearing the slot down blind. `srm uninstall
+  --force` still removes busy slots.
+- **`srm runners refresh` did not reach ephemeral slots**, so unit changes (the 2.7.0
+  cache variables, limits, hardening) only applied to slots recreated by hand. It
+  now also recreates every slot whose unit is out of date, skipping busy slots (run
+  it again for them) and leaving units from a newer srm alone.
+
 ## [2.7.0] - 2026-11-18
 
 ### Added

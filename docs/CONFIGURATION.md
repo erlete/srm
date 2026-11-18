@@ -81,8 +81,8 @@ All values are **systemd syntax strings** - a percentage (`"25%"`), a size
 | `tasksMax` | PID cap (fork-bomb guard). |
 
 Changes apply to **new** runners; run `srm runners refresh` to push them onto
-already-installed persistent runners (busy runners are skipped). Ephemeral slots pick
-them up when recreated (TUI Ephemeral tab, `c`, idle slots only). `srm doctor` shows the
+already-installed runners: it restarts persistent runners and recreates ephemeral
+slots whose unit is out of date (busy runners and slots are skipped). `srm doctor` shows the
 resolved caps; `srm reconcile` reports live `slice mem`, per-runner peak/now, and
 any OOM events.
 
@@ -242,13 +242,12 @@ itself (`uv cache prune`, `mise prune`).
 
 The variables live in each runner's unit (the service environment on Windows). After
 changing `cache.env`, or upgrading to an srm whose defaults changed, `srm reconcile`
-reports the runners as drift until their units are re-applied:
-
-- Persistent runners: `sudo srm runners refresh` (busy runners are skipped; `--org`
-  stages one org at a time).
-- Ephemeral slots: `runners refresh` does not cover them. Recreate each slot (TUI
-  Ephemeral tab, `c`) while it is idle: recreating stops the slot, including a job
-  running on it. Until then the slot keeps working without the change.
+reports the runners as drift until `sudo srm runners refresh` re-applies their units.
+It restarts persistent runners and recreates ephemeral slots whose unit is out of date
+(same slot id, group and labels). Busy runners and slots are skipped, never
+interrupted, so run it again for them; until then a slot keeps working without the
+change. `--org` stages one org at a time. Run it with the installed `srm` binary: a
+recreated slot calls back into the binary that created it.
 
 In workflows on these runners, leave the cache options of setup actions off
 (`actions/setup-node` `cache:`, `astral-sh/setup-uv` `enable-cache`): they would upload

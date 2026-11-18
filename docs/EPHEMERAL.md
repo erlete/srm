@@ -62,8 +62,15 @@ inside the cycle. Hardening is stricter than the persistent drop-in:
 # Create N ephemeral slot lanes (run as root on the host).
 srm runners create --ephemeral --count 6 --org Acme --labels temporal --group temporal
 
-# Tear one slot down (drains the in-flight job, deregisters, removes the lane).
+# Tear one slot down (deregisters, removes the lane). Refused while the slot runs a
+# job; --force kills the job instead.
 srm runners destroy --ephemeral --slot 3 --org Acme
+
+# Recreate slots with the same slot id, group and labels, so they pick up unit
+# changes (cache env, limits, a new agent). Busy slots are refused, never
+# interrupted; --all takes every slot. `srm runners refresh` recreates the slots
+# whose unit is out of date.
+srm runners recreate --ephemeral --slot 3,4 --org Acme
 
 # Audit. Ephemeral lanes are a separate family judged by HOST HEALTH; reconcile
 # never joins them to the GitHub list (the registration name changes every job).
@@ -83,15 +90,15 @@ live in **separate tabs**, each with its own columns and actions:
   runners, `d` destroys (local) or deregisters (remote) by name, `/` filters.
   Ephemeral JIT registrations are excluded here - they belong to their own tab.
 - **Ephemeral** - the host-local slot lanes (ORG/SLOT/STATE/RESTARTS/CONFORM/MEM),
-  judged by host health alone. `n` adds slots (scale up), `d` drains + destroys a
-  slot by id. Never addressed by runner name.
+  judged by host health alone. `n` adds slots (scale up), `d` destroys and `c`
+  recreates the selected slots; both refuse a slot running a job. Never addressed
+  by runner name.
 - **Settings** - the capacity policy (Rule 2: tune caps from the TUI, not env).
   `e` opens the editor: mode (auto/manual), per-runner caps, and the aggregate
   `srm.slice` ceiling. Saving writes `config.yaml` (validated, so a saved config is
   never one srm would refuse to load). Changes apply to **new** runners; run
-  `srm runners refresh` to push them onto already-installed persistent runners.
-  Ephemeral slots pick them up when recreated (Ephemeral tab, `c`); recreate
-  only idle slots, since it stops a job running on the slot.
+  `srm runners refresh` to push them onto already-installed runners (it recreates
+  out-of-date ephemeral slots, skipping busy ones).
 
 ## Capacity (auto, machine-relative)
 
