@@ -89,7 +89,9 @@ live in **separate tabs**, each with its own columns and actions:
   `e` opens the editor: mode (auto/manual), per-runner caps, and the aggregate
   `srm.slice` ceiling. Saving writes `config.yaml` (validated, so a saved config is
   never one srm would refuse to load). Changes apply to **new** runners; run
-  `srm runners refresh` to push them onto already-installed units.
+  `srm runners refresh` to push them onto already-installed persistent runners.
+  Ephemeral slots pick them up when recreated (Ephemeral tab, `c`); recreate
+  only idle slots, since it stops a job running on the slot.
 
 ## Capacity (auto, machine-relative)
 
