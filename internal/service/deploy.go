@@ -125,6 +125,11 @@ func (m *Manager) installRootFor(org string) string {
 // install root today; per-org users, caches, and resource limits later) lives in
 // one place instead of being recomputed at every call site.
 func (m *Manager) orchestratorFor(org string) runner.Orchestrator {
+	return runner.NewForHost(m.installRootFor(org), m.optsFor(org))
+}
+
+// optsFor is the configuration-to-runner.Options mapping behind orchestratorFor.
+func (m *Manager) optsFor(org string) runner.Options {
 	opts := runner.Options{
 		User:          m.cfg.RunnerUserFor(org),
 		CacheRoot:     m.cfg.CacheRootFor(org), // "" in single-user mode → NewUbuntu defaults
@@ -138,6 +143,7 @@ func (m *Manager) orchestratorFor(org string) runner.Orchestrator {
 	}
 	if oc, ok := m.cfg.Org(org); ok {
 		opts.DinDPorts = oc.DinD
+		opts.CacheEnv = oc.Cache.Env
 	}
 	// Auto-capacity mode bounds ALL runners' aggregate memory via a shared slice
 	// (machine-relative, so it scales with the host). Left empty otherwise, keeping
@@ -154,7 +160,7 @@ func (m *Manager) orchestratorFor(org string) runner.Orchestrator {
 		opts.SelfExe = exe
 	}
 	opts.ConfigPath = m.cfgPath
-	return runner.NewForHost(m.installRootFor(org), opts)
+	return opts
 }
 
 // CreateRunners provisions Count persistent runners on the local host. It must
@@ -404,13 +410,14 @@ func (m *Manager) RefreshLocalUnits(ctx context.Context, orgFilter string, only 
 // aggregates the stats (otherwise the per-org caches would grow unbounded).
 func (m *Manager) PruneDepCache(ctx context.Context, maxAge time.Duration) (runner.PruneStats, error) {
 	if !m.cfg.Isolation.PerOrgUsers {
-		// Host-wide: one shared dep cache root (empty org → host defaults).
-		return m.orchestratorFor("").PruneDepCache(ctx, maxAge, m.cfg.DryRun)
+		// Host-wide: one shared dep cache root (empty org → host defaults). Every
+		// org's install trees live under it, so all of them are kept.
+		return m.pruneOrchestrator("", m.cfg.OrgNames()).PruneDepCache(ctx, maxAge, m.cfg.DryRun)
 	}
 	total := runner.PruneStats{Root: config.DefaultCacheRoot + "/<org>"}
 	var firstErr error
 	for _, org := range m.cfg.OrgNames() {
-		s, err := m.orchestratorFor(org).PruneDepCache(ctx, maxAge, m.cfg.DryRun)
+		s, err := m.pruneOrchestrator(org, []string{org}).PruneDepCache(ctx, maxAge, m.cfg.DryRun)
 		total.Files += s.Files
 		total.Bytes += s.Bytes
 		if err != nil && firstErr == nil {
@@ -418,6 +425,31 @@ func (m *Manager) PruneDepCache(ctx context.Context, maxAge time.Duration) (runn
 		}
 	}
 	return total, firstErr
+}
+
+// pruneOrchestrator is orchestratorFor(org) with PruneKeep set to the install-tree
+// cache dirs (config.InstallTreeCacheDirs) of the host defaults and of each of
+// orgs, whose cache.env may move them.
+func (m *Manager) pruneOrchestrator(org string, orgs []string) runner.Orchestrator {
+	opts := m.optsFor(org)
+	opts.PruneKeep = config.InstallTreeCacheDirs(m.cacheRootOrDefault(org), nil)
+	for _, o := range orgs {
+		var ov map[string]string
+		if oc, ok := m.cfg.Org(o); ok && oc != nil {
+			ov = oc.Cache.Env
+		}
+		opts.PruneKeep = append(opts.PruneKeep, config.InstallTreeCacheDirs(m.cacheRootOrDefault(o), ov)...)
+	}
+	return runner.NewForHost(m.installRootFor(org), opts)
+}
+
+// cacheRootOrDefault is the org's dep-cache root as the orchestrator resolves it
+// (CacheRootFor, else the shared DefaultCacheRoot).
+func (m *Manager) cacheRootOrDefault(org string) string {
+	if r := m.cfg.CacheRootFor(org); r != "" {
+		return r
+	}
+	return config.DefaultCacheRoot
 }
 
 // PruneDepCacheRun is PruneDepCache with per-call dry-run threading: dryRun=true

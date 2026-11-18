@@ -54,6 +54,10 @@ type OrgConfig struct {
 	// DinD holds this org's rootless-DinD lane settings (per-slot published-port
 	// partitioning). Only consulted when docker.rootlessDinD is on. See OrgDinD.
 	DinD OrgDinD `koanf:"dind" yaml:"dind,omitempty"`
+
+	// Cache adjusts the build-tool cache env vars injected into this org's
+	// runners (cache.env: NAME -> subdirectory of the cache root). See OrgCache.
+	Cache OrgCache `koanf:"cache" yaml:"cache,omitempty"`
 }
 
 // ResourceLimits are systemd (cgroup v2) resource directives applied to each
@@ -336,25 +340,6 @@ const DefaultRunnerVersion = "2.335.1"
 
 // EnvVar is a name/value environment entry written into a runner's systemd unit.
 type EnvVar struct{ Key, Val string }
-
-// ToolCacheEnv returns the build-tool cache-location env vars pointing each
-// package manager at a host-persistent directory under root. Injected into every
-// runner's systemd drop-in (process env) so the tools - which run in `run:`
-// steps and read these from the environment - keep their caches on the host
-// rather than round-tripping GitHub's capped cache. Order is stable so the
-// generated drop-in is deterministic. Paths are POSIX (the host is Ubuntu x64).
-func ToolCacheEnv(root string) []EnvVar {
-	return []EnvVar{
-		{"npm_config_cache", root + "/npm"},      // npm
-		{"npm_config_store_dir", root + "/pnpm"}, // pnpm content-addressable store
-		{"YARN_CACHE_FOLDER", root + "/yarn"},    // yarn (classic)
-		{"PIP_CACHE_DIR", root + "/pip"},         // pip
-		{"GOMODCACHE", root + "/go/mod"},         // go module cache
-		{"GOCACHE", root + "/go/build"},          // go build cache
-		{"CARGO_HOME", root + "/cargo"},          // cargo registry + git caches
-		{"GRADLE_USER_HOME", root + "/gradle"},   // gradle
-	}
-}
 
 func defaults() *Config {
 	return &Config{

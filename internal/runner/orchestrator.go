@@ -204,6 +204,13 @@ type Options struct {
 	User      string // dedicated non-login service user that owns runner dirs
 	ToolCache string // RUNNER_TOOL_CACHE (AGENT_TOOLSDIRECTORY); shared root or per-org in isolated mode
 	CacheRoot string // build-tool cache root (npm/pnpm/go/... caches); shared root or per-org
+	// CacheEnv is the org's cache.env overrides over the default cache env vars
+	// (config.ToolCacheEnv). Nil = defaults only.
+	CacheEnv map[string]string
+	// PruneKeep lists directories PruneDepCache must not descend into: the cache
+	// dirs holding install trees (config.InstallTreeCacheDirs), where evicting a
+	// single file breaks an install that still looks complete.
+	PruneKeep []string
 	// Resources are the cgroup limits emitted into the unit drop-in. Zero value =
 	// no limits (opt-in), preserving the historical unbounded behavior.
 	Resources config.ResourceLimits
@@ -414,7 +421,7 @@ func (u *ubuntu) ensureBaseIsolated(ctx context.Context) error {
 		if err := mkdirOwned(ctx, u.opts.CacheRoot, 0o700, user); err != nil {
 			return err
 		}
-		for _, e := range config.ToolCacheEnv(u.opts.CacheRoot) {
+		for _, e := range config.ToolCacheEnv(u.opts.CacheRoot, u.opts.CacheEnv) {
 			if err := os.MkdirAll(e.Val, 0o700); err != nil {
 				return fmt.Errorf("cache dir %s: %w", e.Val, err)
 			}
@@ -537,7 +544,7 @@ func (u *ubuntu) ensureCacheDirs(ctx context.Context) error {
 	if u.opts.CacheRoot == "" {
 		return nil
 	}
-	for _, e := range config.ToolCacheEnv(u.opts.CacheRoot) {
+	for _, e := range config.ToolCacheEnv(u.opts.CacheRoot, u.opts.CacheEnv) {
 		if err := os.MkdirAll(e.Val, 0o775); err != nil {
 			return fmt.Errorf("cache dir %s: %w", e.Val, err)
 		}
@@ -740,18 +747,21 @@ func (u *ubuntu) teardownService(ctx context.Context, dir, svc string) {
 // bump isn't forgotten) and TestTemplateVersionMarkers pins the stamped marker to
 // the const.
 const (
-	CurrentDropInVersion = 1
-	// CurrentEphemeralVersion is 2 since the DinD-aware generation: renderEphemeralUnit
-	// now selects between the strict hardening block and a relaxed variant (rootless
+	// CurrentDropInVersion is 2 since the 2.7.0 cache env (pnpm_config_store_dir and
+	// the uv/corepack/Playwright/mise cache vars, plus orgs[].cache.env).
+	CurrentDropInVersion = 2
+	// CurrentEphemeralVersion went to 2 with the DinD-aware generation: renderEphemeralUnit
+	// selects between the strict hardening block and a relaxed variant (rootless
 	// dockerd cannot start under NoNewPrivileges / read-only cgroups). A v1 binary that
 	// does not understand the DinD field treats a v2 unit as newer and authoritative-
 	// skips it instead of reverting the relaxation - the mixed-fleet safety the marker
-	// exists for. Non-DinD units re-render byte-identical apart from the v2 marker.
-	CurrentEphemeralVersion = 2
+	// exists for. It is 3 since the 2.7.0 cache env, which the ephemeral unit shares
+	// with the drop-in (writeEnvAndLimits).
+	CurrentEphemeralVersion = 3
 )
 
 const hardeningDropIn = `[Service]
-# srm-dropin-v1
+# srm-dropin-v2
 # Managed by srm. Defense-in-depth hardening that is safe for general CI.
 ProtectHome=true
 PrivateTmp=true
@@ -816,7 +826,7 @@ func renderDropIn(opts Options) string {
 // output deterministic, so reconcile's byte-equality drift check stays valid.
 func writeEnvAndLimits(b *strings.Builder, opts Options) {
 	b.WriteString("Environment=AGENT_TOOLSDIRECTORY=" + opts.ToolCache + "\n")
-	for _, e := range config.ToolCacheEnv(opts.CacheRoot) {
+	for _, e := range config.ToolCacheEnv(opts.CacheRoot, opts.CacheEnv) {
 		b.WriteString("Environment=" + e.Key + "=" + e.Val + "\n")
 	}
 	r := opts.Resources
@@ -836,7 +846,7 @@ func writeEnvAndLimits(b *strings.Builder, opts Options) {
 // deliberately NOT set to pid - it would hide /proc/cpuinfo and break nproc-based
 // build parallelism. NoNewPrivileges blocks privilege GAIN only; root dropping to
 // the per-org user via setpriv still works.
-const ephemeralHardening = `# srm-ephemeral-v2
+const ephemeralHardening = `# srm-ephemeral-v3
 # Managed by srm. Ephemeral-lane hardening (stricter than the persistent drop-in).
 NoNewPrivileges=true
 ProtectProc=invisible
@@ -884,7 +894,7 @@ LimitCORE=0
 // per-CONTAINER caps are NOT enforced under cgroupfs, but whole-job bounding holds).
 //
 // Used ONLY when Options.DinD is set; non-DinD slots keep the strict block byte-for-byte.
-const ephemeralHardeningDinD = `# srm-ephemeral-v2
+const ephemeralHardeningDinD = `# srm-ephemeral-v3
 # Managed by srm. Ephemeral-lane hardening, rootless-DinD variant: relaxed so the
 # nested rootless build containers can start (mount /proc, sethostname, cgroupfs,
 # newuidmap). The job still runs as the unprivileged, user-namespaced per-org user.

@@ -153,6 +153,7 @@ func TestEditPreservesUnmanagedFields(t *testing.T) {
 		Profiles:   []core.RunnerProfile{{Name: "dind", Labels: []string{"docker"}, GroupID: 7, Ephemeral: true}},
 		Resources:  config.ResourceLimits{MemoryMax: "8G"},
 		DinD:       config.OrgDinD{PortRange: "10000-29999", PortsPerSlot: 500},
+		Cache:      config.OrgCache{Env: map[string]string{"TURBO_CACHE_DIR": "turbo"}},
 	}
 	f := FieldsFromOrgConfig(oc)
 	if f.DinDPortRange != "10000-29999" || f.DinDPortsPerSlot != "500" {
@@ -165,7 +166,8 @@ func TestEditPreservesUnmanagedFields(t *testing.T) {
 	// Change only the labels and clear the partition: the rest survives.
 	f.LabelsStr, f.DinDPortRange, f.DinDPortsPerSlot = "self-hosted,linux", "", ""
 	got := f.ToOrgConfig()
-	if got.RunnerUser != "svc-acme" || len(got.Profiles) != 1 || got.Resources.MemoryMax != "8G" {
+	if got.RunnerUser != "svc-acme" || len(got.Profiles) != 1 || got.Resources.MemoryMax != "8G" ||
+		got.Cache.Env["TURBO_CACHE_DIR"] != "turbo" {
 		t.Fatalf("edit dropped unmanaged fields: %+v", got)
 	}
 	if !got.DinD.IsZero() {

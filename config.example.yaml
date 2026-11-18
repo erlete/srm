@@ -138,6 +138,10 @@ orgs:
       portRange: 10000-29999   # dynamically published host ports (slot N = block N), so
       portsPerSlot: 500        # parallel testcontainers jobs never publish the same port.
                                # Keep pools of different orgs disjoint; omit = default range.
+    cache:                # optional: adjust the build-tool cache vars (NAME: subdirectory of
+      env:                # the cache root). Defaults cover npm/pnpm/yarn/corepack/pip/uv/go/
+        TURBO_CACHE_DIR: turbo   # cargo/gradle/playwright/mise; "" removes one. See
+        MISE_DATA_DIR: mise/data # docs/CONFIGURATION.md "Build-tool caches".
     resources:            # field-level override of the host/auto defaults above
       memoryMax: 40%      # this org's jobs may use more of the box (other fields inherit;
                           # mix % and absolute freely - e.g. "6G" for a fixed cap)
