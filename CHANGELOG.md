@@ -34,10 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version, so pnpm 10 and 11 share it without clashing.
 
 ### Changed
-- The runner unit templates are now drop-in v2 and ephemeral v3. After upgrading,
-  `srm reconcile` reports every runner as drift until `sudo srm runners refresh`
-  re-applies the units (busy runners are skipped, `--org` stages one org at a time).
-  An older srm leaves the newer units alone instead of reverting them.
+- The runner unit templates are now drop-in v2 and ephemeral v3, and `srm reconcile`
+  reports every runner as drift until its unit is re-applied. Persistent runners:
+  `sudo srm runners refresh` (busy runners are skipped, `--org` stages one org at a
+  time). Ephemeral slots are not covered by `runners refresh`: recreate each slot
+  (TUI Ephemeral tab, `c`) while it is idle, since recreating stops the
+  slot and any job running on it. Until then a slot keeps working with its old unit,
+  without the new variables. `srm reconcile` on an older srm leaves the newer units
+  alone; its `runners refresh` and slot recreate write its own templates back.
 
 ### Security
 - Go toolchain directive bumped to 1.26.11, clearing the stdlib advisory GO-2026-6859
