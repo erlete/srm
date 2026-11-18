@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/erlete/srm/internal/core"
 	"github.com/erlete/srm/internal/service"
+	"github.com/erlete/srm/internal/setup"
 )
 
 func newRunnersCmd() *cobra.Command {
@@ -19,7 +21,7 @@ func newRunnersCmd() *cobra.Command {
 		Use:   "runners",
 		Short: "Create, list, refresh, upgrade, destroy self-hosted runners + view their logs",
 	}
-	cmd.AddCommand(newRunnersListCmd(), newRunnersCreateCmd(), newRunnersDeleteCmd(), newRunnersDestroyCmd(), newRunnersRefreshCmd(), newRunnersUpgradeCmd(), newRunnersLogsCmd())
+	cmd.AddCommand(newRunnersListCmd(), newRunnersCreateCmd(), newRunnersDeleteCmd(), newRunnersDestroyCmd(), newRunnersRecreateCmd(), newRunnersRefreshCmd(), newRunnersUpgradeCmd(), newRunnersLogsCmd())
 	return cmd
 }
 
@@ -542,6 +544,7 @@ func newRunnersDestroyCmd() *cobra.Command {
 	var (
 		ephemeral bool
 		slot      string
+		force     bool
 	)
 	c := &cobra.Command{
 		Use:   "destroy [name]",
@@ -571,14 +574,18 @@ func newRunnersDestroyCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if err := mgr.DestroyEphemeralSlot(ctx, org, slot); err != nil {
+				destroy := mgr.DestroyEphemeralSlot
+				if force {
+					destroy = mgr.ForceDestroyEphemeralSlot
+				}
+				if err := destroy(ctx, org, slot); err != nil {
 					return err
 				}
 				fmt.Printf("destroyed ephemeral slot %s (%s)\n", slot, org)
 				return nil
 			}
-			if slot != "" {
-				return fmt.Errorf("--slot is only valid with --ephemeral")
+			if slot != "" || force {
+				return fmt.Errorf("--slot and --force are only valid with --ephemeral")
 			}
 			if len(args) != 1 {
 				return fmt.Errorf("a runner name is required (or use --ephemeral --slot N)")
@@ -617,6 +624,97 @@ func newRunnersDestroyCmd() *cobra.Command {
 	}
 	c.Flags().BoolVar(&ephemeral, "ephemeral", false, "destroy an ephemeral slot lane (by --slot) instead of a persistent runner")
 	c.Flags().StringVar(&slot, "slot", "", "ephemeral slot id (with --ephemeral)")
+	c.Flags().BoolVar(&force, "force", false, "with --ephemeral: destroy the slot even while it runs a job (kills it) or GitHub is unreachable")
+	return c
+}
+
+func newRunnersRecreateCmd() *cobra.Command {
+	var (
+		ephemeral bool
+		slots     string
+		all       bool
+	)
+	c := &cobra.Command{
+		Use:   "recreate --ephemeral (--slot N[,M...] | --all)",
+		Short: "Recreate ephemeral slots on THIS host with the same slot id, group and labels, so they pick up unit changes (run elevated)",
+		Long: "Tears each slot down and stands it back up with the same slot id, runner group " +
+			"and labels, which re-renders its unit (cache env, limits, hardening) and refreshes " +
+			"its agent. A slot running a job is refused, never interrupted: it is deregistered " +
+			"from GitHub only after GitHub reports it idle. Run it again for the slots it " +
+			"skipped. --all takes every slot of --org (or of every org). `srm runners refresh` " +
+			"does the same for the slots whose unit is out of date.",
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if !ephemeral {
+				return fmt.Errorf("only ephemeral slots can be recreated here (--ephemeral); persistent runners take `srm runners refresh`")
+			}
+			if (slots == "") == !all {
+				return fmt.Errorf("give exactly one of --slot N[,M...] or --all")
+			}
+			mgr, closeLog, err := buildManager()
+			if err != nil {
+				return err
+			}
+			defer closeLog()
+			if err := requireOrgs(mgr); err != nil {
+				return err
+			}
+			ctx := context.Background()
+
+			type target struct{ org, slot string }
+			var targets []target
+			if all {
+				if flagOrg != "" {
+					if _, ok := mgr.Config().Org(flagOrg); !ok {
+						return fmt.Errorf("org %q not configured", flagOrg)
+					}
+				}
+				list, err := mgr.ListEphemeralSlots(ctx, flagOrg)
+				if err != nil {
+					return err
+				}
+				for _, s := range list {
+					targets = append(targets, target{s.Org, s.Slot})
+				}
+			} else {
+				org, err := targetOrg(mgr)
+				if err != nil {
+					return err
+				}
+				for _, s := range setup.SplitCSV(slots) {
+					targets = append(targets, target{org, s})
+				}
+			}
+			if len(targets) == 0 {
+				fmt.Println("no ephemeral slots on this host")
+				return nil
+			}
+
+			var ok, busy, failed int
+			for _, t := range targets {
+				label := t.org + "/slot " + t.slot
+				switch err := mgr.RecreateEphemeralSlot(ctx, t.org, t.slot); {
+				case errors.Is(err, service.ErrSlotBusy):
+					busy++
+					fmt.Printf("busy %s: running a job, not recreated\n", label)
+				case err != nil:
+					failed++
+					fmt.Printf("FAIL %s: %v\n", label, err)
+				default:
+					ok++
+					fmt.Printf("ok   %s\n", label)
+				}
+			}
+			fmt.Printf("\nrecreated %d slot(s), %d busy, %d failed\n", ok, busy, failed)
+			if busy+failed > 0 {
+				return fmt.Errorf("%d slot(s) not recreated", busy+failed)
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&ephemeral, "ephemeral", false, "recreate ephemeral slot lanes")
+	c.Flags().StringVar(&slots, "slot", "", "comma-separated slot ids (with --ephemeral)")
+	c.Flags().BoolVar(&all, "all", false, "every ephemeral slot of --org, or of every org")
 	return c
 }
 
@@ -628,7 +726,9 @@ func newRunnersRefreshCmd() *cobra.Command {
 			"the host build-tool cache env (npm/pnpm/go/...), resource limits, or per-org " +
 			"isolation take effect, then restarts the runner. (On Linux this re-renders the " +
 			"systemd drop-in; on Windows it restarts the service, which re-reads its config.) " +
-			"Busy runners are skipped. Use --org to stage a change one org at a time. No recreate needed.",
+			"Ephemeral slots whose unit is out of date are recreated with the same slot id, " +
+			"group and labels (Linux). Busy runners and slots are skipped; run it again for " +
+			"them. Use --org to stage a change one org at a time.",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			mgr, closeLog, err := buildManager()
 			if err != nil {
@@ -649,20 +749,23 @@ func newRunnersRefreshCmd() *cobra.Command {
 					fmt.Printf("WARN %s: %v\n", org, e)
 				}
 			}
-			var ok, failed int
+			var ok, recreated, failed int
 			for _, r := range results {
 				switch {
 				case r.Err != nil:
 					failed++
-					fmt.Printf("FAIL %s/%s: %v\n", r.Org, r.Name, r.Err)
+					fmt.Printf("FAIL %s: %v\n", r.Label(), r.Err)
 				case r.Skipped != "":
-					fmt.Printf("skip %s/%s: %s\n", r.Org, r.Name, r.Skipped)
+					fmt.Printf("skip %s: %s\n", r.Label(), r.Skipped)
+				case r.Ephemeral:
+					recreated++
+					fmt.Printf("ok   %s (recreated)\n", r.Label())
 				default:
 					ok++
-					fmt.Printf("ok   %s/%s\n", r.Org, r.Name)
+					fmt.Printf("ok   %s\n", r.Label())
 				}
 			}
-			fmt.Printf("\nrefreshed %d local runner(s)\n", ok)
+			fmt.Printf("\nrefreshed %d local runner(s), recreated %d out-of-date ephemeral slot(s)\n", ok, recreated)
 			if failed > 0 {
 				return fmt.Errorf("%d refresh(es) failed", failed)
 			}

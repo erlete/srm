@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -332,12 +333,22 @@ func (m *Manager) RecreateRunner(ctx context.Context, org, name string, labels [
 	return nil
 }
 
-// RefreshResult reports the outcome of refreshing one local runner's unit.
+// RefreshResult reports the outcome of refreshing one local runner's unit, or of
+// recreating one ephemeral slot (Ephemeral, Name = slot id).
 type RefreshResult struct {
 	Org, Name string
+	Ephemeral bool
 	Refreshed bool
 	Skipped   string // non-empty reason if skipped (e.g. busy)
 	Err       error
+}
+
+// Label names the runner ("org/name") or slot ("org/slot N") for output.
+func (r RefreshResult) Label() string {
+	if r.Ephemeral {
+		return r.Org + "/slot " + r.Name
+	}
+	return r.Org + "/" + r.Name
 }
 
 // RefreshLocalUnits re-applies the systemd drop-in (hardening + tool-cache env +
@@ -400,7 +411,50 @@ func (m *Manager) RefreshLocalUnits(ctx context.Context, orgFilter string, only 
 		}
 		out = append(out, res)
 	}
+	// Ephemeral slots never show up above (their JIT registrations are not local
+	// runners), and their unit is re-rendered only by recreating the slot. A bounded
+	// selection (only) names persistent runners, so it leaves slots alone.
+	if len(only) == 0 {
+		out = append(out, m.refreshEphemeralSlots(ctx, orgFilter)...)
+	}
 	return out, errs
+}
+
+// refreshEphemeralSlots recreates every local ephemeral slot whose unit differs
+// from what this srm renders, so unit changes (cache env, limits, hardening) reach
+// the lanes too. Busy slots are skipped (the recreate refuses them, see
+// ErrSlotBusy) and a unit from a newer srm is left alone. Conformant slots are
+// not touched and not reported.
+func (m *Manager) refreshEphemeralSlots(ctx context.Context, orgFilter string) []RefreshResult {
+	slots, err := m.ListEphemeralSlots(ctx, orgFilter)
+	if err != nil {
+		return []RefreshResult{{Org: orgFilter, Name: "*", Ephemeral: true, Err: fmt.Errorf("list ephemeral slots: %w", err)}}
+	}
+	var out []RefreshResult
+	for _, s := range slots {
+		if s.UnitOK {
+			continue
+		}
+		res := RefreshResult{Org: s.Org, Name: s.Slot, Ephemeral: true}
+		switch {
+		case s.UnitNewer:
+			res.Skipped = "unit is from a newer srm"
+		case m.cfg.DryRun:
+			res.Skipped = "dry-run (would recreate)"
+		default:
+			err := m.RecreateEphemeralSlot(ctx, s.Org, s.Slot)
+			switch {
+			case errors.Is(err, ErrSlotBusy):
+				res.Skipped = "busy (job running); run refresh again later"
+			case err != nil:
+				res.Err = err
+			default:
+				res.Refreshed = true
+			}
+		}
+		out = append(out, res)
+	}
+	return out
 }
 
 // PruneDepCache evicts build-tool dependency-cache entries on THIS host not

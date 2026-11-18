@@ -110,7 +110,7 @@ func refreshOp(org string, only map[string]bool) opSpec {
 			res, errs := mgr.RefreshLocalUnits(ctx, org, only)
 			items := make([]opItem, 0, len(res))
 			for i, r := range res {
-				it := opItem{Label: r.Org + "/" + r.Name}
+				it := opItem{Label: r.Label()}
 				switch {
 				case r.Err != nil:
 					it.Outcome, it.Detail = outcomeFail, r.Err.Error()
@@ -118,10 +118,13 @@ func refreshOp(org string, only map[string]bool) opSpec {
 					it.Outcome, it.Detail = outcomeSkip, r.Skipped
 				case r.Refreshed:
 					it.Outcome, it.Detail = outcomeOK, "refreshed"
+					if r.Ephemeral {
+						it.Detail = "recreated"
+					}
 				}
 				items = append(items, it)
 				if prog != nil {
-					prog <- core.ProgressEvent{Index: i + 1, Total: len(res), Message: "refreshing " + r.Name}
+					prog <- core.ProgressEvent{Index: i + 1, Total: len(res), Message: "refreshing " + r.Label()}
 				}
 			}
 			return items, firstErr(errs)
