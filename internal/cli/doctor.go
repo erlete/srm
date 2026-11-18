@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -29,6 +31,51 @@ func limitsLine(r config.ResourceLimits) string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// printCacheEnv renders an org's build-tool cache env for `srm doctor`: how many
+// vars its runners get and where, the orgs[].cache.env changes (+added, ~re-pointed,
+// -removed), and every entry srm ignores (left out of the unit, so it costs only
+// that cache). Advisory: it never fails doctor.
+func printCacheEnv(cfg *config.Config, org string) {
+	root := cfg.CacheRootFor(org)
+	if root == "" {
+		root = config.DefaultCacheRoot
+	}
+	var ov map[string]string
+	if oc, ok := cfg.Org(org); ok && oc != nil {
+		ov = oc.Cache.Env
+	}
+	env := config.ToolCacheEnv(root, ov)
+	line := fmt.Sprintf("%d vars under %s", len(env), root)
+	if len(ov) > 0 {
+		def := map[string]bool{}
+		for _, e := range config.ToolCacheEnv(root, nil) {
+			def[e.Key] = true
+		}
+		got := map[string]bool{}
+		for _, e := range env {
+			got[e.Key] = true
+		}
+		var changes []string
+		for _, k := range slices.Sorted(maps.Keys(ov)) {
+			switch {
+			case def[k] && !got[k]:
+				changes = append(changes, "-"+k)
+			case def[k] && got[k]:
+				changes = append(changes, "~"+k)
+			case got[k]:
+				changes = append(changes, "+"+k)
+			}
+		}
+		if len(changes) > 0 {
+			line += " (cache.env: " + strings.Join(changes, " ") + ")"
+		}
+	}
+	fmt.Printf("cache env:   %s\n", line)
+	for _, p := range config.CacheEnvProblems(ov) {
+		fmt.Printf("             IGNORED cache.env %s\n", p)
+	}
 }
 
 // printDinDReadiness renders the rootless-Docker host readiness report (gathered by
@@ -169,6 +216,7 @@ func newDoctorCmd() *cobra.Command {
 				} else {
 					fmt.Printf("limits:      %s\n", limitsLine(res))
 				}
+				printCacheEnv(mgr.Config(), org)
 				// Agent freshness (best-effort, observational). state.json is root-only,
 				// so without root `total` reads 0 and we just report the published version.
 				if cur, total, behind, ok := mgr.AgentVersionStatus(ctx, org); ok {

@@ -46,6 +46,7 @@ Invalid `resourceMode` and isolation user collisions are rejected at load.
 | `profiles` | list | Optional named runner profiles. |
 | `dind.portRange` | string | Rootless-DinD only: this org's pool of dynamically published host ports, `START-END` (e.g. `10000-29999`). Each ephemeral slot gets its own block of it. Empty = off. See [Published ports](#published-ports-orgsdind). |
 | `dind.portsPerSlot` | int | Block size per slot inside `dind.portRange` (default `1000`). |
+| `cache.env` | map | Add, move or remove build-tool cache variables for this org (`NAME: subdirectory`, `""` removes a default). See [Build-tool caches](#build-tool-caches-orgscache). |
 
 See [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) for creating the App, the exact
 permissions (**Organization → Self-hosted runners: Read & write**, plus optional
@@ -171,6 +172,82 @@ to the range and `tcp_tw_reuse` its running daemon actually uses, read from the 
 network namespace (`pinned`, `pending` until its next cycle, `not applied`, `default`,
 or `not running`), plus warnings for overlapping pools. Run it as root. The Health tab
 shows a summary.
+
+## Build-tool caches (`orgs[].cache`)
+
+Every runner's environment points each package manager's cache at a host-persistent
+directory under the org's cache root: `/opt/srm-cache`, or `/opt/srm-cache/<org>` with
+`isolation.perOrgUsers` (`%ProgramData%\srm\cache` on Windows). Jobs reuse downloads
+across runs, including on ephemeral lanes whose `HOME` is wiped after every job.
+
+| Variable | Tool | Subdirectory |
+| --- | --- | --- |
+| `npm_config_cache` | npm | `npm` |
+| `npm_config_store_dir` | pnpm 10 and older | `pnpm` |
+| `pnpm_config_store_dir` | pnpm 11 and newer | `pnpm` |
+| `YARN_CACHE_FOLDER` | Yarn classic | `yarn` |
+| `COREPACK_HOME` | Corepack (downloaded pnpm/Yarn) | `corepack` |
+| `PIP_CACHE_DIR` | pip | `pip` |
+| `UV_CACHE_DIR` | uv | `uv` |
+| `GOMODCACHE` | Go modules | `go/mod` |
+| `GOCACHE` | Go build cache | `go/build` |
+| `CARGO_HOME` | Cargo registry and git caches | `cargo` |
+| `GRADLE_USER_HOME` | Gradle | `gradle` |
+| `PLAYWRIGHT_BROWSERS_PATH` | Playwright browsers | `playwright` |
+| `MISE_CACHE_DIR` | mise downloads | `mise/cache` |
+
+Both pnpm variables point at the same store: pnpm keeps one subdirectory per store
+version (`v3`, `v10`, `v11`), so versions do not clash.
+
+These directories are shared by all of the org's runners, and parallel ephemeral slots
+use them at the same time. The defaults are therefore only caches that are safe to read
+and write concurrently.
+
+`cache.env` changes the list for one org, as `NAME: subdirectory`:
+
+```yaml
+orgs:
+  - name: Acme
+    cache:
+      env:
+        MISE_DATA_DIR: mise/data   # add: share the tools mise installs
+        TURBO_CACHE_DIR: turbo     # add: Turborepo's local cache
+        UV_CACHE_DIR: python/uv    # move a default
+        GOCACHE: ""                # remove a default
+```
+
+- The subdirectory is relative to the cache root and may contain letters, digits, `.`,
+  `_`, `-` and `/`, with no `.` or `..` segments.
+- An empty value removes a default.
+- srm refuses names it or the runner sets (`HOME`, `PATH`, `TMPDIR`, `USERPROFILE`, ...),
+  names that load code (`LD_*`, `DYLD_*`, `PYTHONPATH`, `NODE_PATH`, `NODE_OPTIONS`, ...)
+  and the `RUNNER_`, `GITHUB_`, `ACTIONS_`, `SRM_` and `DOCKER_` prefixes, since a shared
+  directory there would let one job affect the next.
+- An invalid entry is left out and the rest still applies. `srm doctor` shows each org's
+  cache variables and lists every ignored entry; a bad entry never stops a runner.
+
+Two additions need care, which is why they are not defaults:
+
+- `MISE_DATA_DIR` shares installed tools, so a job that runs `mise prune` or uninstalls
+  a version changes them for every other job of the org.
+- `TURBO_CACHE_DIR` shares build outputs that any job of the org can write, including a
+  pull request's. Keep release builds off it (`turbo run build --force`).
+
+`srm cache prune` deletes cache files not accessed within `cacheRetentionDays`, but it
+skips `COREPACK_HOME`, `UV_CACHE_DIR`, `PLAYWRIGHT_BROWSERS_PATH` and `MISE_DATA_DIR`
+wherever `cache.env` points them. They hold unpacked installs, where deleting single
+files leaves an install that looks complete but is broken. Trim them with the tool
+itself (`uv cache prune`, `mise prune`).
+
+The variables live in each runner's unit (the service environment on Windows). After
+changing `cache.env`, or upgrading to an srm whose defaults changed, `srm reconcile`
+reports the runners as drift until `sudo srm runners refresh` re-applies them (busy
+runners are skipped; `--org` stages one org at a time).
+
+In workflows on these runners, leave the cache options of setup actions off
+(`actions/setup-node` `cache:`, `astral-sh/setup-uv` `enable-cache`): they would upload
+the org's whole shared cache to GitHub's cache, and `setup-uv` also prunes it after the
+job.
 
 ## Host (`host`)
 

@@ -126,7 +126,7 @@ func TestRenderDropIn(t *testing.T) {
 	if !strings.Contains(got, "Environment=AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache\n") {
 		t.Errorf("missing AGENT_TOOLSDIRECTORY line:\n%s", got)
 	}
-	for _, e := range config.ToolCacheEnv(opts.CacheRoot) {
+	for _, e := range config.ToolCacheEnv(opts.CacheRoot, opts.CacheEnv) {
 		want := "Environment=" + e.Key + "=" + e.Val + "\n"
 		if !strings.Contains(got, want) {
 			t.Errorf("missing cache env line %q", want)
@@ -166,7 +166,7 @@ func TestRenderDropIn(t *testing.T) {
 // staying deterministic.
 func TestRenderDropInGolden(t *testing.T) {
 	const golden = `[Service]
-# srm-dropin-v1
+# srm-dropin-v2
 # Managed by srm. Defense-in-depth hardening that is safe for general CI.
 ProtectHome=true
 PrivateTmp=true
@@ -186,12 +186,17 @@ RestrictRealtime=true
 Environment=AGENT_TOOLSDIRECTORY=/tc
 Environment=npm_config_cache=/cr/npm
 Environment=npm_config_store_dir=/cr/pnpm
+Environment=pnpm_config_store_dir=/cr/pnpm
 Environment=YARN_CACHE_FOLDER=/cr/yarn
+Environment=COREPACK_HOME=/cr/corepack
 Environment=PIP_CACHE_DIR=/cr/pip
+Environment=UV_CACHE_DIR=/cr/uv
 Environment=GOMODCACHE=/cr/go/mod
 Environment=GOCACHE=/cr/go/build
 Environment=CARGO_HOME=/cr/cargo
 Environment=GRADLE_USER_HOME=/cr/gradle
+Environment=PLAYWRIGHT_BROWSERS_PATH=/cr/playwright
+Environment=MISE_CACHE_DIR=/cr/mise/cache
 `
 	if got := renderDropIn(Options{ToolCache: "/tc", CacheRoot: "/cr"}); got != golden {
 		t.Errorf("drop-in body changed without updating the golden.\nIf intentional, update this golden AND bump CurrentDropInVersion.\n--- got ---\n%s\n--- want ---\n%s", got, golden)
@@ -473,5 +478,26 @@ func TestNewUbuntuDefaults(t *testing.T) {
 	}
 	if u2.opts.ToolCache != config.DefaultToolCacheRoot {
 		t.Errorf("unset ToolCache should still default, got %q", u2.opts.ToolCache)
+	}
+}
+
+// orgs[].cache.env reaches the unit: added and re-pointed vars render, a removed
+// default and an invalid entry do not.
+func TestRenderDropInCacheEnvOverrides(t *testing.T) {
+	got := renderDropIn(Options{ToolCache: "/tc", CacheRoot: "/cr", CacheEnv: map[string]string{
+		"TURBO_CACHE_DIR": "turbo",
+		"UV_CACHE_DIR":    "py/uv",
+		"GOCACHE":         "",
+		"HOME":            "home",
+	}})
+	for _, want := range []string{"Environment=TURBO_CACHE_DIR=/cr/turbo\n", "Environment=UV_CACHE_DIR=/cr/py/uv\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"\nEnvironment=GOCACHE=", "\nEnvironment=HOME="} {
+		if strings.Contains(got, bad) {
+			t.Errorf("%q must not be rendered:\n%s", bad, got)
+		}
 	}
 }

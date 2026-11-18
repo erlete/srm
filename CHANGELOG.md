@@ -6,6 +6,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-18
+
+### Added
+- **Per-org build-tool cache variables** (`orgs[].cache.env`, `NAME: subdirectory` of
+  the cache root). An entry adds a variable or moves a default, and an empty value
+  removes a default, so adding a tool's cache no longer needs an srm release. Invalid
+  entries (bad name, a path outside the cache root, or a reserved or code-loading name
+  such as `HOME`, `PATH`, `LD_*` or `NODE_OPTIONS`) are left out and the rest still
+  applies. `srm doctor` shows each org's cache variables and lists every ignored entry.
+- New default cache variables, for caches that used to live in the job's wiped `HOME`
+  and are safe under parallel jobs: `UV_CACHE_DIR` (uv), `COREPACK_HOME` (Corepack),
+  `PLAYWRIGHT_BROWSERS_PATH` (Playwright browsers) and `MISE_CACHE_DIR` (mise
+  downloads). `MISE_DATA_DIR` and Turborepo's `TURBO_CACHE_DIR` are available through
+  `cache.env` but are not defaults: they share installed tools and build outputs that
+  any job of the org can change.
+- `srm cache prune` skips the cache directories that hold unpacked installs
+  (`COREPACK_HOME`, `UV_CACHE_DIR`, `PLAYWRIGHT_BROWSERS_PATH`, `MISE_DATA_DIR`),
+  wherever `cache.env` points them: evicting single files there would leave an
+  install that looks complete but is broken.
+
+### Fixed
+- **pnpm 11 and newer never reused the shared store.** pnpm 11 no longer reads
+  `npm_config_*` variables, so it ignored `npm_config_store_dir` and kept its store in
+  the job's `HOME`, which ephemeral lanes wipe after every job. srm now also sets
+  `pnpm_config_store_dir` to the same directory; pnpm keeps a subdirectory per store
+  version, so pnpm 10 and 11 share it without clashing.
+
+### Changed
+- The runner unit templates are now drop-in v2 and ephemeral v3. After upgrading,
+  `srm reconcile` reports every runner as drift until `sudo srm runners refresh`
+  re-applies the units (busy runners are skipped, `--org` stages one org at a time).
+  An older srm leaves the newer units alone instead of reverting them.
+
+### Security
+- Go toolchain directive bumped to 1.26.11, clearing the stdlib advisory GO-2026-6859
+  (net/http).
+
 ## [2.6.1] - 2026-11-08
 
 ### Fixed

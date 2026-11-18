@@ -42,7 +42,7 @@ func TestWinRunnerEnv(t *testing.T) {
 		k, v, _ := strings.Cut(kv, "=")
 		m[k] = v
 	}
-	for _, e := range config.ToolCacheEnv(opts.CacheRoot) {
+	for _, e := range config.ToolCacheEnv(opts.CacheRoot, opts.CacheEnv) {
 		got, ok := m[e.Key]
 		if !ok {
 			t.Errorf("missing env key %s", e.Key)

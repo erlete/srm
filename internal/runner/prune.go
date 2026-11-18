@@ -23,6 +23,8 @@ type PruneStats struct {
 // (/opt/hostedtoolcache) is deliberately NOT pruned here - it is bounded by the
 // number of toolchain versions and holds intentional seeds; pruning it safely
 // needs version-directory granularity (atomic, marker-aware), a separate concern.
+// For the same reason the cache dirs in opts.PruneKeep (install trees, see
+// config.InstallTreeCacheDirs) are skipped.
 func (u *ubuntu) PruneDepCache(_ context.Context, maxAge time.Duration, dryRun bool) (PruneStats, error) {
 	stats := PruneStats{Root: u.opts.CacheRoot}
 	if u.opts.CacheRoot == "" {
@@ -32,11 +34,21 @@ func (u *ubuntu) PruneDepCache(_ context.Context, maxAge time.Duration, dryRun b
 		return stats, nil // nothing provisioned yet
 	}
 	cutoff := time.Now().Add(-maxAge)
+	keep := make(map[string]bool, len(u.opts.PruneKeep))
+	for _, k := range u.opts.PruneKeep {
+		keep[filepath.Clean(k)] = true
+	}
 	err := filepath.WalkDir(u.opts.CacheRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // skip unreadable entries, keep going
 		}
-		if d.IsDir() || !d.Type().IsRegular() {
+		if d.IsDir() {
+			if keep[filepath.Clean(p)] {
+				return fs.SkipDir // an install tree: evicting single files would break it
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		fi, err := d.Info()

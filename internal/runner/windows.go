@@ -170,7 +170,7 @@ func (w *windows) EnsureBase(ctx context.Context) error {
 // AGENT_TOOLSDIRECTORY is first so the list is deterministic.
 func winRunnerEnv(opts Options) []string {
 	env := []string{"AGENT_TOOLSDIRECTORY=" + filepath.FromSlash(opts.ToolCache)}
-	for _, e := range config.ToolCacheEnv(opts.CacheRoot) {
+	for _, e := range config.ToolCacheEnv(opts.CacheRoot, opts.CacheEnv) {
 		env = append(env, e.Key+"="+filepath.FromSlash(e.Val))
 	}
 	return env
