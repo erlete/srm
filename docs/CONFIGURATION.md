@@ -115,6 +115,40 @@ before). See `docs/EPHEMERAL.md` for the full model and the hardening trade-off.
 | --- | --- | --- |
 | `rootlessDinD` | bool | Per-job rootless `dockerd` on ephemeral slots; `DOCKER_HOST`/`BUILDX_BUILDER` injected so a stock `setup-buildx-action` build works unchanged. Daemon + data-root wiped each cycle. |
 | `buildkitImage` | string | Override the pre-seeded buildx BuildKit image. Default `moby/buildkit:buildx-stable-1` (the **standard** image - the `-rootless` tag double-nests and fails inside a rootless daemon). |
+| `registryMirrors` | list | Docker Hub mirrors (pull-through caches) for every rootless-DinD slot, as base URLs (`http://10.255.255.1:5000`). See [Registry mirrors](#registry-mirrors-dockerregistrymirrors). |
+
+### Registry mirrors (`docker.registryMirrors`)
+
+Each job starts with an empty Docker data-root, so without a cache every job pulls
+its images from Docker Hub again, and a busy host behind one public IP soon hits Docker
+Hub's anonymous pull limit (HTTP 429). A pull-through cache on the host (for example
+`registry:3` with `proxy.remoteurl: https://registry-1.docker.io`) fixes that once
+srm points the slots at it:
+
+```yaml
+docker:
+  rootlessDinD: true
+  registryMirrors: ["http://10.255.255.1:5000"]
+```
+
+- The slot's daemon tries the mirrors before Docker Hub for its own pulls (`docker
+  pull`, compose, testcontainers): srm writes them to its `daemon.json`, with `http://`
+  mirrors as insecure registries.
+- The pre-seeded BuildKit builder uses them for `FROM` and cache imports: srm writes
+  `[registry."docker.io"] mirrors` (and `http = true` for `http://` mirrors) to its
+  `buildkitd.toml`.
+- Both fall back to Docker Hub when a mirror fails, so a mirror that is down slows
+  pulls down but does not break jobs.
+- Only Docker Hub (`docker.io`) images go through the mirrors; other registries are
+  pulled directly.
+- Listen on an address the slots can reach. BuildKit runs as a container behind
+  `slirp4netns`, which cannot reach the host's loopback, so `127.0.0.1` does not work.
+  Use a non-loopback host address, such as a dummy interface.
+- Each entry is `http://` or `https://` plus host and optional port, nothing else. An
+  invalid entry is ignored (the others still apply).
+- srm writes both files at the start of every job, so a change applies from each
+  slot's next job: no refresh or recreate. `srm doctor` lists the mirrors and checks
+  that each answers `GET /v2/` (from the host).
 
 Requires host prerequisites srm does not install (add via the `host` manifest below
 or a `setupScript`): `docker-ce` + `docker-ce-rootless-extras`, `uidmap`,
