@@ -29,18 +29,25 @@ Each slot's unit runs `srm _runner-cycle --org X --slot N` as **root** on a loop
 (`Restart=always`). One cycle:
 
 1. Reap a ghost from a prior crashed cycle (`.jit-id`), if any.
+   With `minFreeDisk` set, wait while the runners' filesystem has less free space
+   than that: the slot does not register, so GitHub sends the job to another runner
+   instead of this one filling the disk the whole host shares. The wait is logged in
+   the slot's journal when it starts, every 10 minutes and when it ends.
 2. Mint a JIT config (reads the App key in `/etc/srm` - root only).
 3. Record the runner id (`fsync`'d) **before** the job, so a crash leaves a
    reapable ghost.
-4. Reset the workspace (`_work`/`_diag`/`_home`/`.runner`/`.credentials*`), keep the
-   warm binaries.
+4. Reset the workspace (`_work`/`_diag`/`_home`/`_tmp`/`.runner`/`.credentials*`), keep
+   the warm binaries.
 5. **Drop root → `srm-<org>` via `setpriv`** (PAM-free), assert `euid != 0` first,
    write a `.ran-as` attestation, then run `run.sh --jitconfig <blob>` for exactly
    one job. The job env is set explicitly (`setpriv` is not a login): `HOME` points at
    a **fresh per-job `_home`** (wiped each cycle - no creds at rest, no clash with the
    org's persistent runners that share the passwd HOME), and `USER`/`LOGNAME` are the
    per-org user. Without this, `$HOME`-reading actions (npm/`.netrc`, `git config
-   --global`, `changesets`) would see `HOME` unset and `USER=root`.
+   --global`, `changesets`) would see `HOME` unset and `USER=root`. `TMPDIR` points
+   at a fresh per-job `_tmp` (0700, wiped each cycle): DinD slot units cannot use
+   `PrivateTmp`, and without it jobs left scanner extracts and test caches in the
+   host's `/tmp`, shared by every org.
 6. After the job, if the runner is still registered (it should auto-deregister),
    reap it - reaping is by **registration state**, not run.sh's exit code (which is
    unreliable).

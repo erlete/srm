@@ -38,6 +38,12 @@ runnerUser: srm
 # Optional: log to a file instead of stderr (the TUI never logs to stdout).
 logFile: ""
 
+# Optional: free space an ephemeral slot needs on the runners' filesystem before
+# it registers for its next job ("20G", "500M" or "10%"). Below it the slot waits
+# and GitHub sends the job to another runner, so a few big jobs (Docker images)
+# cannot fill the disk every slot and the host share. Omit = off.
+# minFreeDisk: 10%
+
 # Preview mutations without calling GitHub. Can also be set with --dry-run.
 dryRun: false
 

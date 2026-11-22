@@ -23,6 +23,7 @@ Invalid `resourceMode` and isolation user collisions are rejected at load.
 | `dryRun` | bool | `false` | Preview mutations without calling GitHub (also `--dry-run`). |
 | `logFile` | string | - | Optional log file path. |
 | `cacheRetentionDays` | int | command default | Default age cutoff for `srm cache prune`. |
+| `minFreeDisk` | string | off | Free space an ephemeral slot needs on the runners' filesystem before it registers for a job (`20G`, `500M`, or a percentage like `10%`). Below it the slot waits and GitHub sends the job elsewhere, so a few big jobs cannot fill the disk the host shares. An invalid value is ignored and shown by `srm doctor`, which also lists the free space and each slot tree's size. |
 | `resources` | map | - (no caps) | Host-wide per-runner cgroup caps. See [Resources](#resources-resources). |
 | `resourceMode` | string | `""` | `""` = literal `resources`; `"auto"` = machine-relative %. See [Capacity](#capacity-policy). |
 | `sliceMemoryMax` | string | `75%` | Aggregate `srm.slice` ceiling (auto mode only). |
@@ -166,7 +167,11 @@ is never changed.
   connections than that to one published port needs a larger `portsPerSlot`.
 - **Explicit host ports** (`-p 8080:80`) are not partitioned: two jobs that publish
   the same fixed port still collide, and a fixed port inside another slot's block can
-  take that port from it.
+  take that port from it. Prefer dynamic ports (`-p 0:80`, then `docker port`). A job
+  that needs fixed host ports finds its slot's block in `SRM_PUBLISHED_PORT_RANGE`
+  (`LO-HI`) and picks them inside it. srm sets the variable only when the slot's
+  daemon really runs on that block, so a job can fall back to dynamic ports when it
+  is missing.
 
 `srm doctor` prints each pool and, for every local slot, the block it is assigned next
 to the range and `tcp_tw_reuse` its running daemon actually uses, read from the slot's

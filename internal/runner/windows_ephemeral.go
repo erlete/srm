@@ -327,6 +327,10 @@ func (w *windows) ClearJIT(org, slot string) error {
 	return nil
 }
 
+// ResetEphemeralSlot is a no-op on Windows: RunJob wipes the slot's per-job state
+// itself (the supervisor has no Docker data-root to reclaim before minting).
+func (w *windows) ResetEphemeralSlot(context.Context, string, string) error { return nil }
+
 // RunJob resets the slot's per-job workspace (keeping the warm agent tree) and runs
 // run.cmd for EXACTLY one job with the given JIT config. The agent runs as THIS
 // process's account (the supervisor service's low-privilege account) - no privilege

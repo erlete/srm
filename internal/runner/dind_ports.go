@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/erlete/srm/internal/config"
 )
 
 // DinDPortWrapperPath is the static, root-owned dockerd wrapper srm installs for
@@ -184,4 +186,28 @@ func parseDinDNetns(s string) (DinDNetns, error) {
 		n[i] = x
 	}
 	return DinDNetns{PortLo: n[0], PortHi: n[1], TWReuse: n[2]}, nil
+}
+
+// PublishedPortRangeEnv tells a job the published-port block of its DinD slot
+// ("LO-HI"), so a job that needs fixed host ports picks them inside it and never
+// collides with another slot.
+const PublishedPortRangeEnv = "SRM_PUBLISHED_PORT_RANGE"
+
+// publishedPortEnv returns the PublishedPortRangeEnv entry for the slot, or "" when
+// the org does not partition ports or the slot's daemon does not run on its block
+// (the wrapper is fail-open, so the range is read back from the namespace rather
+// than assumed).
+func publishedPortEnv(ports config.OrgDinD, slot string, read func() (DinDNetns, error)) string {
+	if !ports.PortsEnabled() {
+		return ""
+	}
+	lo, hi, err := ports.SlotPortRange(slot)
+	if err != nil {
+		return ""
+	}
+	ns, err := read()
+	if err != nil || ns.PortLo != lo || ns.PortHi != hi {
+		return ""
+	}
+	return fmt.Sprintf("%s=%d-%d", PublishedPortRangeEnv, lo, hi)
 }

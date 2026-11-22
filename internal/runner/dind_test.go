@@ -85,13 +85,14 @@ func TestEnsureSubIDFileRejectsUndersized(t *testing.T) {
 // USER=root (setpriv is not a login): HOME/USER/LOGNAME must be set, HOME must be the
 // per-job dir (not the shared passwd HOME), and any extra (DinD DOCKER_HOST) appended.
 func TestEphemeralJobEnv(t *testing.T) {
-	env := ephemeralJobEnv("srm-acme", "/opt/actions-runners/acme/.ephemeral/3/_home",
+	env := ephemeralJobEnv("srm-acme", "/opt/actions-runners/acme/.ephemeral/3/_home", "/opt/actions-runners/acme/.ephemeral/3/_tmp",
 		[]string{"DOCKER_HOST=unix:///run/srm/dind/acme/3/docker.sock"})
 	want := map[string]bool{
 		"RUNNER_ALLOW_RUNASROOT=0":                            false,
 		"HOME=/opt/actions-runners/acme/.ephemeral/3/_home":   false,
 		"USER=srm-acme":                                       false,
 		"LOGNAME=srm-acme":                                    false,
+		"TMPDIR=/opt/actions-runners/acme/.ephemeral/3/_tmp":  false,
 		"DOCKER_HOST=unix:///run/srm/dind/acme/3/docker.sock": false,
 	}
 	for _, e := range env {
@@ -110,9 +111,9 @@ func TestEphemeralJobEnv(t *testing.T) {
 			t.Error("HOME must be the per-job dir, not the shared passwd HOME")
 		}
 	}
-	// No extra → still sets the core three + the guard, in a stable order.
-	base := ephemeralJobEnv("srm-x", "/h", nil)
-	if len(base) != 4 || base[0] != "RUNNER_ALLOW_RUNASROOT=0" || base[1] != "HOME=/h" {
+	// No extra: still sets the core four + the guard, in a stable order.
+	base := ephemeralJobEnv("srm-x", "/h", "/t", nil)
+	if len(base) != 5 || base[0] != "RUNNER_ALLOW_RUNASROOT=0" || base[1] != "HOME=/h" {
 		t.Errorf("base env shape wrong: %v", base)
 	}
 }
