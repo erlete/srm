@@ -22,6 +22,7 @@ import (
 
 	"github.com/erlete/srm/internal/config"
 	"github.com/erlete/srm/internal/core"
+	"github.com/erlete/srm/internal/fsown"
 )
 
 // Reconciler applies and inspects the host dependency layer.
@@ -87,7 +88,7 @@ func (u *ubuntu) Apply(ctx context.Context, m core.DependencyManifest) error {
 			return fmt.Errorf("cache path %s: %w", dir, err)
 		}
 		if u.runnerUser != "" {
-			if err := run(ctx, "chown", "-R", u.runnerUser+":"+u.runnerUser, dir); err != nil {
+			if err := fsown.ChownTree(dir, u.runnerUser, fsown.SkipDockerData); err != nil {
 				return fmt.Errorf("chown cache path %s: %w", dir, err)
 			}
 		}

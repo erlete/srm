@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.2] - 2026-11-22
+
+### Fixed
+- **Creating or recreating a runner or slot re-owned the rootless Docker data of the
+  org's live slots.** The host setup behind `runners create`, `recreate` and
+  `refresh` ran `chown -R` over the whole org tree (the whole install root in
+  single-user mode), including every slot's `.docker-data`. Those files belong to
+  the user namespace's subordinate ids, so a running container could lose access
+  to its own data (a rootless PostgreSQL, buildx's cache). The walk also failed,
+  and the new slot was not created, when a file vanished under it, which on a busy
+  org happened every time. Ownership is now fixed by a walk that never enters
+  `.ephemeral` slot trees or any `.docker-data`, only changes entries the runner
+  user does not already own (normally none), never follows symbolic links or
+  re-owns a hard link to a foreign file, and ignores files that disappear. A new
+  runner or slot gets its own tree walked; the org directory itself is changed
+  without recursing. The build-tool cache, the tool cache and `srm provision`'s
+  `persistentCachePaths` use the same walk.
+
 ## [2.7.1] - 2026-11-18
 
 ### Added
