@@ -269,6 +269,7 @@ func newDoctorCmd() *cobra.Command {
 			dind := mgr.DinDReadiness(orgs)
 			printDinDReadiness(dind)
 			printDinDPortRanges(mgr.DinDPortRanges(ctx, orgs))
+			printDiskUsage(mgr.DiskUsage(ctx, orgs))
 
 			fmt.Println("\nFor deep host/runner drift + health (and repair), run `srm reconcile`.")
 			// A missing hard DinD prerequisite is a real misconfiguration, not an
@@ -278,5 +279,47 @@ func newDoctorCmd() *cobra.Command {
 			}
 			return nil
 		},
+	}
+}
+
+// printDiskUsage renders the runners' filesystem (free space against minFreeDisk)
+// and the disk used by each local ephemeral slot tree, flagging trees an
+// interrupted create left without a unit. Advisory: it never fails doctor.
+func printDiskUsage(rep service.DiskReport) {
+	fmt.Println()
+	fmt.Printf("disk (runners' filesystem, %s):\n", rep.Root)
+	if rep.Err != "" {
+		fmt.Printf("  %-18s unreadable: %s\n", "free", rep.Err)
+	} else {
+		free := fmt.Sprintf("%s of %s", service.HumanBytes(rep.Avail), service.HumanBytes(rep.Total))
+		switch {
+		case rep.MinFreeErr != "":
+			fmt.Printf("  %-18s %s; INVALID minFreeDisk, ignored by the slots: %s\n", "free", free, rep.MinFreeErr)
+		case rep.MinFree == 0:
+			fmt.Printf("  %-18s %s; minFreeDisk not set (e.g. `minFreeDisk: 10%%` makes slots wait instead of filling the disk)\n", "free", free)
+		case rep.Below():
+			fmt.Printf("  %-18s %s; BELOW minFreeDisk %s (%s): ephemeral slots wait before registering for jobs\n",
+				"free", free, rep.MinFreeSpec, service.HumanBytes(rep.MinFree))
+		default:
+			fmt.Printf("  %-18s %s; minFreeDisk %s (%s)\n", "free", free, rep.MinFreeSpec, service.HumanBytes(rep.MinFree))
+		}
+	}
+	if len(rep.Slots) == 0 {
+		return
+	}
+	fmt.Printf("  %-28s %s\n", "slot tree", "size")
+	for _, s := range rep.Slots {
+		size := service.HumanBytes(s.Bytes)
+		switch {
+		case s.Partial && s.Bytes == 0:
+			size = "not measured (doctor time limit)"
+		case s.Partial:
+			size = ">= " + size + " (partial)"
+		}
+		line := fmt.Sprintf("  %-28s %s", s.Org+"/slot "+s.Slot, size)
+		if s.Orphan {
+			line += fmt.Sprintf("  LEFTOVER: no unit (an interrupted create); the next create of this slot reuses it, or `srm runners destroy --ephemeral --slot %s --org %s` removes it", s.Slot, s.Org)
+		}
+		fmt.Println(line)
 	}
 }

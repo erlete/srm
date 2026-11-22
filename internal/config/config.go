@@ -284,6 +284,12 @@ type Config struct {
 	// command's built-in default. Lets a cron'd prune be config-driven.
 	CacheRetentionDays int `koanf:"cacheRetentionDays" yaml:"cacheRetentionDays,omitempty"`
 
+	// MinFreeDisk is the free space an ephemeral slot needs on the runners'
+	// filesystem before it registers for its next job ("20G", "10%"). Below it the
+	// slot waits, so jobs go to other runners instead of filling the disk. Empty =
+	// off. See ParseMinFreeDisk.
+	MinFreeDisk string `koanf:"minFreeDisk" yaml:"minFreeDisk,omitempty"`
+
 	// JobLogRetentionDays is the age cutoff for pruning captured ephemeral job logs
 	// (/var/lib/srm/joblogs) during `srm cache prune`. 0 = fall back to the prune
 	// command's effective cache retention. Lets the durable job-log store be bounded

@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/erlete/srm/internal/core"
@@ -378,6 +380,21 @@ func (m *Manager) RunCycle(ctx context.Context, org, slot string) error {
 	if stale := orch.PendingJIT(org, slot); stale != 0 {
 		_ = c.DeleteRunner(ctx, org, stale)
 		_ = orch.ClearJIT(org, slot)
+	}
+
+	// Do not register for a job while the runners' filesystem is below
+	// minFreeDisk: GitHub routes the job to another runner instead of this slot
+	// filling the disk every slot and the host share. Wipe this slot's previous
+	// job first (RunJob would only do it after the mint): otherwise a slot whose
+	// last job left gigabytes of Docker data would wait on its own leftovers.
+	if strings.TrimSpace(m.cfg.MinFreeDisk) != "" {
+		if err := orch.ResetEphemeralSlot(ctx, org, slot); err != nil {
+			backoffSleep(ctx)
+			return fmt.Errorf("reset slot before the disk check: %w", err)
+		}
+		if err := m.waitForDisk(ctx, org, slot, os.Stderr); err != nil {
+			return err
+		}
 	}
 
 	params, err := orch.EphemeralMintParams(org, slot)

@@ -6,6 +6,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-11-22
+
+### Added
+- **`minFreeDisk`**: the free space an ephemeral slot needs on the runners'
+  filesystem before it registers for its next job (`20G`, `500M` or `10%`). Below
+  it the slot waits instead of taking a job, so GitHub sends the job to another
+  runner and a few big jobs cannot fill the disk every slot and the host share. The
+  wait is logged in the slot's journal when it starts, every 10 minutes and when it
+  ends. Off by default; an invalid value is ignored, never stops a slot, and is
+  shown by `srm doctor`.
+- `srm doctor` shows the runners' filesystem (free space against `minFreeDisk`) and
+  the disk used by each local ephemeral slot tree, Docker data included (measured
+  like `du -x`, with a time limit per slot). It flags slot trees left without a
+  unit by an interrupted create, with the command that removes them.
+- **`SRM_PUBLISHED_PORT_RANGE`** in the job environment of a DinD slot whose org
+  partitions published ports (`dind.portRange`): the slot's block as `LO-HI`, so a
+  job that needs fixed host ports picks them inside it instead of colliding with
+  another slot. Set only when the slot's daemon really runs on that block (read
+  back from its network namespace).
+
+### Changed
+- **Ephemeral jobs get their own `TMPDIR`**: a per-job `_tmp` in the slot tree
+  (0700, wiped before each job like `_home`). DinD slot units cannot use
+  `PrivateTmp`, so jobs used to leave files in the host's `/tmp` (scanner extracts,
+  test caches), shared by every org and never cleaned.
+- Creating a slot over a tree left by an interrupted create says so, and the
+  removal of an old slot tree first detaches any rootless-Docker mounts a killed
+  slot left, so it no longer fails with "device or resource busy".
+
 ## [2.7.2] - 2026-11-22
 
 ### Fixed

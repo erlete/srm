@@ -150,6 +150,10 @@ type Orchestrator interface {
 	// RunJob resets the slot's per-job workspace, drops from root to the per-org
 	// user, and runs run.sh for EXACTLY one job with the given JIT config. Root-only.
 	RunJob(ctx context.Context, org, slot, jitConfig string) error
+	// ResetEphemeralSlot wipes the slot's per-job state (workspace, per-job HOME and
+	// TMPDIR, Docker data) as RunJob does before each job. Root-only; never while the
+	// slot runs a job.
+	ResetEphemeralSlot(ctx context.Context, org, slot string) error
 	// PendingJIT returns the runner id recorded for an in-flight cycle (0 if none) -
 	// a non-zero value after a crash is a ghost the caller should deregister.
 	PendingJIT(org, slot string) int64
@@ -1463,9 +1467,17 @@ func (u *ubuntu) EnsureEphemeralSlot(ctx context.Context, spec EphemeralSlotSpec
 	dir := u.ephemeralSlotDir(spec.Org, spec.Slot)
 	svc := EphemeralSvcName(spec.Org, spec.Slot)
 
-	// Fully tear down any prior lane + tree so the rebuild is idempotent.
+	// Fully tear down any prior lane + tree so the rebuild is idempotent. A tree
+	// without a unit is what an interrupted create leaves (stopped mid-extract);
+	// say so. A killed slot can leave rootless-Docker mounts in its tree, which
+	// would make the removal fail with EBUSY, so detach them first and reclaim as
+	// the per-job reset does.
+	if _, err := os.Stat(dir); err == nil && !fileExists(filepath.Join("/etc/systemd/system", svc)) {
+		fmt.Fprintf(os.Stderr, "srm: slot %s/%s: removing the partial tree an interrupted create left\n", spec.Org, spec.Slot)
+	}
 	u.teardownEphemeral(ctx, svc)
-	if err := os.RemoveAll(dir); err != nil {
+	unmountStaleSlotMounts(ctx, dir)
+	if err := reclaimPath(ctx, dir); err != nil {
 		return err
 	}
 	// The org dir, .ephemeral parent, and slot dir are owned by the per-org user so
@@ -1614,35 +1626,10 @@ func (u *ubuntu) RunJob(ctx context.Context, org, slot, jitConfig string) error 
 		return fmt.Errorf("RunJob must run as root to drop to %s", u.opts.User)
 	}
 	dir := u.ephemeralSlotDir(org, slot)
-	// Fresh per-job workspace: wipe the mutable layer (and any prior JIT runtime
-	// creds run.sh materialized - they belong to a spent registration), keeping the
-	// warm agent binaries. run.sh re-creates .runner/.credentials from the new JIT
-	// config each cycle, so removing stale ones here leaves no creds at rest between
-	// jobs.
-	//
-	// The wipe runs as REAL root (the unit has no User=; the drop to the per-org user
-	// happens below via setpriv), so it reclaims files a job left owned by a subuid or
-	// by root - e.g. a workflow "reclaim workspace" step that ran `chown` INSIDE a
-	// rootless-DinD container, which maps container-root to a host subuid. That makes a
-	// workflow-level reclaim step UNNECESSARY and HARMFUL under rootless DinD: srm
-	// already hands each job a clean, runner-owned _work. reclaimPath forces the removal
-	// if a plain RemoveAll is blocked (immutable bit, etc.).
-	resetDirs := []string{"_work", "_diag", "_home", ".runner", ".credentials", ".credentials_rsaparams"}
-	if u.opts.DinD {
-		// The rootless daemon's data-root (pulled images, built layers, build cache)
-		// lives in the slot tree. Wiping it HERE, before each job, is the authoritative
-		// clean-slate: it closes the race where a SIGKILL'd cycle skips post-job teardown
-		// and leaks images/cache/registry creds into the next (possibly cross-org) job.
-		resetDirs = append(resetDirs, ".docker-data")
-		// That same SIGKILL'd cycle also skips stopRootlessDocker, leaving fuse-overlayfs/
-		// overlay mounts under .docker-data. Detach them first, else os.RemoveAll fails
-		// EBUSY and the unit hot-loops on every cycle.
-		unmountStaleSlotMounts(ctx, dir)
-	}
-	for _, sub := range resetDirs {
-		if err := reclaimPath(ctx, filepath.Join(dir, sub)); err != nil {
-			return fmt.Errorf("reset %s: %w", sub, err)
-		}
+	// Fresh per-job workspace (see ResetEphemeralSlot). The wipe runs as REAL root
+	// (the unit has no User=; the drop to the per-org user happens below via setpriv).
+	if err := u.ResetEphemeralSlot(ctx, org, slot); err != nil {
+		return err
 	}
 	if err := mkdirOwned(ctx, filepath.Join(dir, "_work"), 0o700, u.opts.User); err != nil {
 		return err
@@ -1650,6 +1637,11 @@ func (u *ubuntu) RunJob(ctx context.Context, org, slot, jitConfig string) error 
 	// Fresh, private per-job HOME (see ephemeralJobEnv for why the job needs one).
 	jobHome := filepath.Join(dir, "_home")
 	if err := mkdirOwned(ctx, jobHome, 0o700, u.opts.User); err != nil {
+		return err
+	}
+	// And a fresh, private per-job TMPDIR (see ephemeralJobEnv).
+	jobTmp := filepath.Join(dir, "_tmp")
+	if err := mkdirOwned(ctx, jobTmp, 0o700, u.opts.User); err != nil {
 		return err
 	}
 	// Resolve the per-org user's uid/gid (pure-Go /etc/passwd read under CGO_ENABLED=0).
@@ -1682,12 +1674,48 @@ func (u *ubuntu) RunJob(ctx context.Context, org, slot, jitConfig string) error 
 	// not a login, so HOME/USER/LOGNAME would otherwise be unset/inherited-root -
 	// ephemeralJobEnv fixes that (jobEnv carries DinD's DOCKER_HOST et al, empty otherwise).
 	argv := append([]string{"--reuid", usr.Uid, "--regid", usr.Gid, "--init-groups", "--", "env"},
-		ephemeralJobEnv(u.opts.User, jobHome, jobEnv)...)
+		ephemeralJobEnv(u.opts.User, jobHome, jobTmp, jobEnv)...)
 	argv = append(argv, "./run.sh", "--jitconfig", jitConfig)
 	cmd := exec.CommandContext(ctx, "setpriv", argv...)
 	cmd.Dir = dir
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+// ResetEphemeralSlot wipes a slot's per-job state: the mutable layer (and any prior
+// JIT runtime creds run.sh materialized - they belong to a spent registration),
+// keeping the warm agent binaries. run.sh re-creates .runner/.credentials from the new
+// JIT config each cycle, so removing stale ones leaves no creds at rest between jobs.
+// RunJob calls it before every job; RunCycle also calls it before checking
+// minFreeDisk, so a slot never waits on the disk its own previous job filled. Never
+// call it while the slot runs a job.
+//
+// It must run as REAL root, so it reclaims files a job left owned by a subuid or by
+// root - e.g. a workflow "reclaim workspace" step that ran `chown` INSIDE a
+// rootless-DinD container, which maps container-root to a host subuid. That makes a
+// workflow-level reclaim step UNNECESSARY and HARMFUL under rootless DinD: srm already
+// hands each job a clean, runner-owned _work. reclaimPath forces the removal if a
+// plain RemoveAll is blocked (immutable bit, etc.).
+func (u *ubuntu) ResetEphemeralSlot(ctx context.Context, org, slot string) error {
+	dir := u.ephemeralSlotDir(org, slot)
+	resetDirs := []string{"_work", "_diag", "_home", "_tmp", ".runner", ".credentials", ".credentials_rsaparams"}
+	if u.opts.DinD {
+		// The rootless daemon's data-root (pulled images, built layers, build cache)
+		// lives in the slot tree. Wiping it before each job is the authoritative
+		// clean-slate: it closes the race where a SIGKILL'd cycle skips post-job teardown
+		// and leaks images/cache/registry creds into the next (possibly cross-org) job.
+		resetDirs = append(resetDirs, ".docker-data")
+		// That same SIGKILL'd cycle also skips stopRootlessDocker, leaving fuse-overlayfs/
+		// overlay mounts under .docker-data. Detach them first, else os.RemoveAll fails
+		// EBUSY and the unit hot-loops on every cycle.
+		unmountStaleSlotMounts(ctx, dir)
+	}
+	for _, sub := range resetDirs {
+		if err := reclaimPath(ctx, filepath.Join(dir, sub)); err != nil {
+			return fmt.Errorf("reset %s: %w", sub, err)
+		}
+	}
+	return nil
 }
 
 // reclaimPath removes path and everything under it as REAL root. os.RemoveAll already
@@ -1751,14 +1779,18 @@ func unmountStaleSlotMounts(ctx context.Context, root string) {
 // explicitly. HOME is a FRESH per-job dir (wiped with the rest of the slot's per-cycle
 // state), NOT the user's shared passwd HOME: that keeps the ephemeral clean-slate (no
 // creds at rest between jobs) and avoids colliding with the org's persistent runners,
-// which share the passwd HOME. RUNNER_ALLOW_RUNASROOT=0 re-asserts the runner's own
-// no-root guard; extra carries DinD's DOCKER_HOST/BUILDX_BUILDER (empty otherwise).
-func ephemeralJobEnv(user, home string, extra []string) []string {
+// which share the passwd HOME. TMPDIR is a fresh per-job dir too: DinD slot units
+// cannot use PrivateTmp, so without it jobs wrote to the host's /tmp, shared by every
+// org and never cleaned (scanner extracts, test caches). RUNNER_ALLOW_RUNASROOT=0
+// re-asserts the runner's own no-root guard; extra carries DinD's
+// DOCKER_HOST/BUILDX_BUILDER (empty otherwise).
+func ephemeralJobEnv(user, home, tmp string, extra []string) []string {
 	env := []string{
 		"RUNNER_ALLOW_RUNASROOT=0",
 		"HOME=" + home,
 		"USER=" + user,
 		"LOGNAME=" + user,
+		"TMPDIR=" + tmp,
 	}
 	return append(env, extra...)
 }
@@ -1924,6 +1956,10 @@ func (u *ubuntu) startRootlessDocker(ctx context.Context, org, slot string, usr 
 	// DOCKER_CONFIG is per-slot and wiped each cycle; the job is handed the same value so
 	// its `docker`/`docker buildx` reads the builder srm pre-seeds below.
 	env := []string{"DOCKER_HOST=unix://" + sock, "XDG_RUNTIME_DIR=" + rt, "DOCKER_CONFIG=" + dockerCfg}
+	// The slot's published-port block, when its daemon really runs on it.
+	if e := publishedPortEnv(u.opts.DinDPorts, slot, func() (DinDNetns, error) { return ReadDinDNetns(ctx, org, slot) }); e != "" {
+		env = append(env, e)
+	}
 	// Pre-seed a rootless-capable buildx builder and point the job's buildx at it via
 	// BUILDX_BUILDER (which outranks any builder docker/setup-buildx-action creates and
 	// `docker buildx use` sets), so the default docker-container driver builds against a
