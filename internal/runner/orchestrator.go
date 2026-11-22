@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/erlete/srm/internal/config"
+	"github.com/erlete/srm/internal/fsown"
 )
 
 // ErrRunnerDown is wrapped into the error UpgradeRunnerAgent returns when an upgrade
@@ -329,8 +330,10 @@ func (u *ubuntu) EnsureBase(ctx context.Context) error {
 }
 
 // ensureBaseLegacy is the historical single-user behavior: one user owns the
-// whole installRoot and the host-wide tool/dep caches. UNCHANGED - do not factor
-// this through the isolated path; the divergence is too easy to get subtly wrong.
+// whole installRoot and the host-wide tool/dep caches. Do not factor this through
+// the isolated path; the divergence is too easy to get subtly wrong. Ownership is
+// fixed with fsown.ChownTree, which leaves live ephemeral slots and their rootless
+// Docker data alone.
 func (u *ubuntu) ensureBaseLegacy(ctx context.Context) error {
 	if err := exec.CommandContext(ctx, "id", u.opts.User).Run(); err != nil {
 		if err := run(ctx, "useradd", "--system", "--shell", "/usr/sbin/nologin", "--home-dir", u.installRoot, u.opts.User); err != nil {
@@ -346,7 +349,7 @@ func (u *ubuntu) ensureBaseLegacy(ctx context.Context) error {
 	}
 	// The whole tree (incl. the user's $HOME/.cache for tool/build caches) must
 	// be owned by the runner user.
-	if err := run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, u.installRoot); err != nil {
+	if err := fsown.ChownTree(u.installRoot, u.opts.User, fsown.SkipSlotsAndDockerData); err != nil {
 		return err
 	}
 	// Host-wide tool cache shared by all runners (RUNNER_TOOL_CACHE). One
@@ -354,7 +357,7 @@ func (u *ubuntu) ensureBaseLegacy(ctx context.Context) error {
 	if err := os.MkdirAll(u.opts.ToolCache, 0o775); err != nil {
 		return err
 	}
-	if err := run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, u.opts.ToolCache); err != nil {
+	if err := fsown.ChownTree(u.opts.ToolCache, u.opts.User, fsown.SkipDockerData); err != nil {
 		return err
 	}
 	return u.ensureCacheDirs(ctx)
@@ -408,7 +411,7 @@ func (u *ubuntu) ensureBaseIsolated(ctx context.Context) error {
 	if err := mkdirOwned(ctx, filepath.Join(home, ".cache"), 0o700, user); err != nil {
 		return err
 	}
-	if err := run(ctx, "chown", "-R", user+":"+user, home); err != nil {
+	if err := fsown.ChownTree(home, user, fsown.SkipSlotsAndDockerData); err != nil {
 		return err
 	}
 
@@ -426,7 +429,7 @@ func (u *ubuntu) ensureBaseIsolated(ctx context.Context) error {
 				return fmt.Errorf("cache dir %s: %w", e.Val, err)
 			}
 		}
-		if err := run(ctx, "chown", "-R", user+":"+user, u.opts.CacheRoot); err != nil {
+		if err := fsown.ChownTree(u.opts.CacheRoot, user, fsown.SkipDockerData); err != nil {
 			return err
 		}
 	}
@@ -440,7 +443,7 @@ func (u *ubuntu) ensureBaseIsolated(ctx context.Context) error {
 	if err := mkdirOwned(ctx, u.opts.ToolCache, 0o755, user); err != nil {
 		return err
 	}
-	return run(ctx, "chown", "-R", user+":"+user, u.opts.ToolCache)
+	return fsown.ChownTree(u.opts.ToolCache, user, fsown.SkipDockerData)
 }
 
 // ensureTraversable makes a shared parent directory exist and be traversable by
@@ -540,7 +543,7 @@ func ensureSubIDFile(path, user string) error {
 // ensureCacheDirs creates the host-wide build-tool cache directories (one per
 // ToolCacheEnv entry) and gives them to the runner user, so jobs can persist
 // dependency caches there across runs. Idempotent.
-func (u *ubuntu) ensureCacheDirs(ctx context.Context) error {
+func (u *ubuntu) ensureCacheDirs(_ context.Context) error {
 	if u.opts.CacheRoot == "" {
 		return nil
 	}
@@ -549,7 +552,7 @@ func (u *ubuntu) ensureCacheDirs(ctx context.Context) error {
 			return fmt.Errorf("cache dir %s: %w", e.Val, err)
 		}
 	}
-	return run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, u.opts.CacheRoot)
+	return fsown.ChownTree(u.opts.CacheRoot, u.opts.User, fsown.SkipDockerData)
 }
 
 // agentCacheRoot (the root-only dir holding downloaded agent tarballs, OUTSIDE any
@@ -1089,9 +1092,13 @@ func (u *ubuntu) CreateRunner(ctx context.Context, spec RunnerSpec, dl Download,
 	if err := extractTarGz(tarball, dir); err != nil {
 		return fmt.Errorf("extract runner: %w", err)
 	}
-	// chown the org subtree (not just the runner dir) so the runner user can
-	// traverse {installRoot}/{org} into its own directory.
-	if err := run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, orgDir); err != nil {
+	// The runner user must own {installRoot}/{org} itself (to traverse into its
+	// own directory) and the new runner tree; the org's other runners and slots
+	// are left alone.
+	if err := run(ctx, "chown", u.opts.User+":"+u.opts.User, orgDir); err != nil {
+		return err
+	}
+	if err := fsown.ChownTree(dir, u.opts.User, fsown.SkipDockerData); err != nil {
 		return err
 	}
 
@@ -1214,7 +1221,7 @@ func (u *ubuntu) UpgradeRunnerAgent(ctx context.Context, org, name string, dl Do
 		if err := extractTarGz(tarball, dir); err != nil {
 			return fmt.Errorf("extract runner: %w", err)
 		}
-		if err := run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, dir); err != nil {
+		if err := fsown.ChownTree(dir, u.opts.User, fsown.SkipDockerData); err != nil {
 			return err
 		}
 		if err := u.writeHardening(ctx, svc); err != nil {
@@ -1487,8 +1494,8 @@ func (u *ubuntu) EnsureEphemeralSlot(ctx context.Context, spec EphemeralSlotSpec
 	}
 	// The per-org user owns the whole slot tree (extracted agent + _work) so the
 	// dropped run.sh can read/write it. Done BEFORE writing the root-only control
-	// files below so the chown -R never touches them.
-	if err := run(ctx, "chown", "-R", u.opts.User+":"+u.opts.User, dir); err != nil {
+	// files below so the chown never touches them.
+	if err := fsown.ChownTree(dir, u.opts.User, fsown.SkipDockerData); err != nil {
 		return err
 	}
 	// Persist the JIT mint params in the ROOT-only control dir (NOT the slot tree -
