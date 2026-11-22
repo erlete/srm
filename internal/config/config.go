@@ -190,6 +190,11 @@ type DockerConfig struct {
 	// image plus --oci-worker-no-process-sandbox (srm passes it) is the working combo
 	// (validated live). Empty uses DefaultRootlessBuildkitImage. Ignored when off.
 	BuildkitImage string `koanf:"buildkitImage" yaml:"buildkitImage,omitempty"`
+	// RegistryMirrors are Docker Hub mirrors (pull-through caches) the rootless
+	// daemon and the pre-seeded BuildKit builder try before docker.io, as base URLs
+	// ("http://10.255.255.1:5000"). Both fall back to docker.io when a mirror fails.
+	// Empty = pull from docker.io directly. See ParseRegistryMirrors.
+	RegistryMirrors []string `koanf:"registryMirrors" yaml:"registryMirrors,omitempty"`
 }
 
 // DefaultRootlessBuildkitImage is the BuildKit image srm pins the pre-seeded buildx

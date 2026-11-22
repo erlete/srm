@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-23
+
+### Added
+- **Docker Hub mirrors for rootless-DinD slots** (`docker.registryMirrors`, a list
+  of base URLs such as `http://10.255.255.1:5000`). Every job starts with an empty
+  Docker data-root and used to pull all its images from Docker Hub again, so a busy
+  host behind one IP hit the anonymous pull limit (HTTP 429). With a pull-through
+  cache on the host, the slot's daemon (`docker pull`, compose, testcontainers) and
+  the pre-seeded BuildKit builder (`FROM`, cache imports) try the mirrors first and
+  fall back to Docker Hub when they fail. `http://` mirrors are configured as
+  insecure registries for the daemon and plain-http registries for BuildKit. The
+  files are rewritten at the start of every job, so a change applies from each
+  slot's next job with no refresh. Invalid entries are ignored and the rest apply.
+- `srm doctor` lists the mirrors and checks that each answers `GET /v2/` (200 or
+  401); one that does not is reported, since jobs then pull from Docker Hub directly.
+
 ## [2.8.0] - 2026-11-22
 
 ### Added

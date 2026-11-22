@@ -273,6 +273,9 @@ type Options struct {
 	// network namespace before dockerd starts. Only consulted when DinD is set; the
 	// zero value leaves the daemon env byte-identical to before.
 	DinDPorts config.OrgDinD
+	// RegistryMirrors are the validated docker.registryMirrors the slot's rootless
+	// daemon and BuildKit builder try before docker.io (rewritten every cycle).
+	RegistryMirrors []config.RegistryMirror
 }
 
 type ubuntu struct {
@@ -1896,7 +1899,9 @@ func (u *ubuntu) startRootlessDocker(ctx context.Context, org, slot string, usr 
 	// without per-container limits (whole-job bounds still come from the slot unit's
 	// systemd caps). Validated live on Ubuntu 24.04 / cgroup v2.
 	cfgFile := filepath.Join(rt, "daemon.json")
-	if err := os.WriteFile(cfgFile, []byte(`{"exec-opts":["native.cgroupdriver=cgroupfs"]}`+"\n"), 0o644); err != nil {
+	// It also carries the docker.registryMirrors (rootlessDaemonConfig), rewritten
+	// every cycle, so a config change applies from each slot's next job.
+	if err := os.WriteFile(cfgFile, rootlessDaemonConfig(u.opts.RegistryMirrors), 0o644); err != nil {
 		return nil, nil, err
 	}
 
@@ -2031,7 +2036,7 @@ func (u *ubuntu) seedRootlessBuilder(ctx context.Context, org, slot string, usr 
 	// Pin a buildkitd config that disables CDI. Best-effort: if it can't be written we
 	// create without it (CDI noise returns, the build still works).
 	bkCfg := filepath.Join(rt, "buildkitd.toml")
-	if err := os.WriteFile(bkCfg, []byte(buildkitdCDIDisabled), 0o644); err != nil {
+	if err := os.WriteFile(bkCfg, []byte(rootlessBuildkitdConfig(u.opts.RegistryMirrors)), 0o644); err != nil {
 		bkCfg = ""
 	}
 

@@ -269,6 +269,7 @@ func newDoctorCmd() *cobra.Command {
 			dind := mgr.DinDReadiness(orgs)
 			printDinDReadiness(dind)
 			printDinDPortRanges(mgr.DinDPortRanges(ctx, orgs))
+			printRegistryMirrors(mgr.RegistryMirrorCheck(ctx))
 			printDiskUsage(mgr.DiskUsage(ctx, orgs))
 
 			fmt.Println("\nFor deep host/runner drift + health (and repair), run `srm reconcile`.")
@@ -321,5 +322,30 @@ func printDiskUsage(rep service.DiskReport) {
 			line += fmt.Sprintf("  LEFTOVER: no unit (an interrupted create); the next create of this slot reuses it, or `srm runners destroy --ephemeral --slot %s --org %s` removes it", s.Slot, s.Org)
 		}
 		fmt.Println(line)
+	}
+}
+
+// printRegistryMirrors renders docker.registryMirrors with a GET /v2/ probe of
+// each (nothing when none is configured). Advisory: a mirror that does not answer
+// only means the slots pull from docker.io directly, since dockerd and BuildKit
+// fall back to it.
+func printRegistryMirrors(rep service.MirrorReport) {
+	if !rep.Configured() {
+		return
+	}
+	fmt.Println()
+	fmt.Println("docker registry mirrors (docker.registryMirrors):")
+	if !rep.DinD {
+		fmt.Println("  note: only rootless-DinD slots use them, and docker.rootlessDinD is off")
+	}
+	for _, m := range rep.Mirrors {
+		if m.OK {
+			fmt.Printf("  %-32s ok (%s)\n", m.URL, m.Detail)
+		} else {
+			fmt.Printf("  %-32s NOT ANSWERING (%s): jobs pull from docker.io directly while it is down\n", m.URL, m.Detail)
+		}
+	}
+	for _, p := range rep.Problems {
+		fmt.Printf("  INVALID, ignored: %s\n", p)
 	}
 }

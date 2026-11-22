@@ -110,6 +110,9 @@ isolation:
 docker:
   rootlessDinD: false
   # buildkitImage: moby/buildkit:buildx-stable-1-rootless  # override the pinned rootless BuildKit image
+  # Docker Hub pull-through caches for the slots' daemon and BuildKit (both fall back
+  # to docker.io). Use a non-loopback host address: BuildKit cannot reach 127.0.0.1.
+  # registryMirrors: ["http://10.255.255.1:5000"]
 
 orgs:
   - name: acme

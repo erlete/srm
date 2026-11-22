@@ -142,6 +142,7 @@ func (m *Manager) optsFor(org string) runner.Options {
 		DinD:          m.cfg.Docker.RootlessDinD,
 		BuildkitImage: m.cfg.Docker.BuildkitImage,
 	}
+	opts.RegistryMirrors, _ = config.ParseRegistryMirrors(m.cfg.Docker.RegistryMirrors)
 	if oc, ok := m.cfg.Org(org); ok {
 		opts.DinDPorts = oc.DinD
 		opts.CacheEnv = oc.Cache.Env
